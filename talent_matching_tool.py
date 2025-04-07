@@ -394,7 +394,7 @@ def main():
     credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS', 'credentials.json')
     
     # Initialize the tool
-    tool = EnhancedTalentMatchingTool(credentials_path)
+    tool = TalentMatchingTool(credentials_path)
     
     # Example: Get job details from row 2 as a validated model
     job_row = 2
