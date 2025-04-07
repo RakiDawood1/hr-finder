@@ -1,10 +1,11 @@
 """
-Talent Matching Tool - Phase 1: Setup & Data Access
-This script handles Google Sheets and Drive integration to access job requirements and candidate profiles.
+Talent Matching Tool - Phase 1: Setup & Data Access with Pydantic Integration
+This script handles Google Sheets and Drive integration to access job requirements and candidate profiles,
+with added Pydantic data validation.
 """
 
 import os
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import pandas as pd
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -19,11 +20,15 @@ from dotenv import load_dotenv
 import PyPDF2
 import docx2txt
 
+# Import Pydantic models
+from pydantic_models import JobRequirement, CandidateProfile, MatchResult
+from pydantic_integration import parse_job_to_model, parse_candidate_to_model
+
 # Load environment variables
 load_dotenv()
 
 class TalentMatchingTool:
-    """Main class for the Talent Matching Tool."""
+    """Enhanced main class for the Talent Matching Tool with Pydantic integration."""
     
     def __init__(self, credentials_path: str):
         """
@@ -96,6 +101,26 @@ class TalentMatchingTool:
         except HttpError as error:
             print(f"An error occurred: {error}")
             return {}
+    
+    def get_job_model(self, row_number: int) -> Optional[JobRequirement]:
+        """
+        Retrieve and validate job details as a Pydantic model.
+        
+        Args:
+            row_number: The row number of the job in the Jobs Sheet
+            
+        Returns:
+            A validated JobRequirement model or None if retrieval fails
+        """
+        job_dict = self.get_job_details(row_number)
+        if not job_dict:
+            return None
+            
+        try:
+            return parse_job_to_model(job_dict)
+        except Exception as e:
+            print(f"Error parsing job to model: {e}")
+            return None
     
     def get_all_talents(self) -> pd.DataFrame:
         """
@@ -296,6 +321,26 @@ class TalentMatchingTool:
         
         return talent_dict, cv_content
     
+    def get_talent_model(self, row_number: int) -> Optional[CandidateProfile]:
+        """
+        Retrieve and validate talent details as a Pydantic model.
+        
+        Args:
+            row_number: The row number of the talent in the Talents Sheet
+            
+        Returns:
+            A validated CandidateProfile model or None if retrieval fails
+        """
+        talent_dict, cv_content = self.get_talent_with_cv(row_number)
+        if not talent_dict:
+            return None
+            
+        try:
+            return parse_candidate_to_model(talent_dict, cv_content)
+        except Exception as e:
+            print(f"Error parsing candidate to model: {e}")
+            return None
+    
     def process_all_talents_with_cvs(self) -> List[Tuple[Dict[str, Any], str]]:
         """
         Process all talents and their CVs.
@@ -321,6 +366,27 @@ class TalentMatchingTool:
             results.append((talent_dict, cv_content))
             
         return results
+    
+    def get_all_talent_models(self) -> List[CandidateProfile]:
+        """
+        Process all talents and convert them to validated Pydantic models.
+        
+        Returns:
+            A list of validated CandidateProfile models
+        """
+        all_talents_with_cvs = self.process_all_talents_with_cvs()
+        talent_models = []
+        
+        for talent_dict, cv_content in all_talents_with_cvs:
+            try:
+                model = parse_candidate_to_model(talent_dict, cv_content)
+                talent_models.append(model)
+            except Exception as e:
+                print(f"Error parsing candidate {talent_dict.get('Name', 'Unknown')} to model: {e}")
+                # Continue processing other candidates even if one fails
+                continue
+                
+        return talent_models
 
 # Example usage
 def main():
@@ -328,22 +394,30 @@ def main():
     credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS', 'credentials.json')
     
     # Initialize the tool
-    tool = TalentMatchingTool(credentials_path)
+    tool = EnhancedTalentMatchingTool(credentials_path)
     
-    # Example: Get job details from row 2
+    # Example: Get job details from row 2 as a validated model
     job_row = 2
-    job_details = tool.get_job_details(job_row)
-    print(f"Job Details from row {job_row}:")
-    print(job_details)
+    job_model = tool.get_job_model(job_row)
+    print(f"Job Model from row {job_row}:")
+    if job_model:
+        print(f"Title: {job_model.title}")
+        print(f"Required skills: {', '.join([skill.name for skill in job_model.required_skills])}")
+        print(f"Experience level: {job_model.experience_level}")
+    else:
+        print("Failed to retrieve job model")
     print("\n")
     
-    # Example: Get talent with CV
+    # Example: Get talent with CV as a validated model
     talent_row = 2
-    talent_details, cv_content = tool.get_talent_with_cv(talent_row)
-    print(f"Talent Details from row {talent_row}:")
-    print(talent_details)
-    print("\nCV Content Preview (first 500 chars):")
-    print(cv_content[:500] + "..." if len(cv_content) > 500 else cv_content)
+    talent_model = tool.get_talent_model(talent_row)
+    print(f"Talent Model from row {talent_row}:")
+    if talent_model:
+        print(f"Name: {talent_model.name}")
+        print(f"Skills: {', '.join([skill.name for skill in talent_model.skills])}")
+        print(f"CV content length: {len(talent_model.cv_content) if talent_model.cv_content else 0} characters")
+    else:
+        print("Failed to retrieve talent model")
     
 if __name__ == "__main__":
     main()
