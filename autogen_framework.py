@@ -23,6 +23,13 @@ from pydantic import ValidationError
 # Import the Pydantic models
 from pydantic_models import JobRequirement, CandidateProfile, Skill, MatchResult
 
+# Import Gemini integration if available
+try:
+    from gemini_integration import get_gemini_config_from_env
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -35,17 +42,28 @@ class AutoGenTalentMatcher:
     Multi-Agent Framework using Microsoft's AutoGen for talent matching.
     """
     
-    def __init__(self, config_list=None, verbose=True):
+    def __init__(self, config_list=None, verbose=True, use_gemini=False):
         """
         Initialize the AutoGen-based Talent Matcher.
         
         Args:
             config_list: Configuration for the LLM (if None, agents will use function calling only)
             verbose: Whether to display detailed agent conversations
+            use_gemini: Whether to use Gemini API (requires GEMINI_API_KEY in environment)
         """
         self.verbose = verbose
         self.config_list = config_list
+        self.use_gemini = use_gemini
         self.tfidf_vectorizer = TfidfVectorizer(stop_words='english')
+        
+        # If use_gemini is set, try to get Gemini configuration
+        if use_gemini and GEMINI_AVAILABLE:
+            self.gemini_config = get_gemini_config_from_env()
+            if self.gemini_config:
+                self.config_list = self.gemini_config.get_gemini_for_autogen()
+                logger.info("Using Gemini API for AutoGen")
+            else:
+                logger.warning("Gemini API requested but not configured properly. Falling back to default.")
         
         # Initialize agents
         self._setup_agents()
@@ -56,9 +74,23 @@ class AutoGenTalentMatcher:
         """Set up the AutoGen agents."""
         # Create a termination message function
         def is_termination_msg(content):
+            # Check for dictionary format
             if isinstance(content, dict) and "final_candidates" in content:
                 return True
+            # Check for string format that might signal completion
+            if isinstance(content, str) and ("ranked candidates" in content.lower() or 
+                                            "matching complete" in content.lower() or
+                                            "top candidates" in content.lower()):
+                return True
             return False
+        
+        # Set up LLM config
+        llm_config = self.config_list
+        
+        # For Gemini, we need to set up a custom completion function
+        gemini_completion_function = None
+        if self.use_gemini and GEMINI_AVAILABLE and self.gemini_config:
+            gemini_completion_function = self.gemini_config.create_gemini_completion_function()
         
         # Create the coordinator agent
         self.coordinator_agent = autogen.AssistantAgent(
@@ -66,8 +98,11 @@ class AutoGenTalentMatcher:
             system_message="""You are a Talent Coordinator AI specialized in initial candidate matching.
 Your job is to filter job candidates based on basic criteria and prepare data for the HR Manager.
 You'll analyze skills, experience, and CV content to find potential matches for a job.
-Communicate clearly and focus on objective criteria for matching.""",
-            llm_config=self.config_list,
+Communicate clearly and focus on objective criteria for matching.
+
+IMPORTANT: After processing candidates, you MUST respond with a message that includes the phrase 
+'matching complete' to signal that you have finished your task.""",
+            llm_config=llm_config,
             description="Filters candidates based on initial criteria",
             is_termination_msg=is_termination_msg,
             human_input_mode="NEVER"
@@ -79,8 +114,11 @@ Communicate clearly and focus on objective criteria for matching.""",
             system_message="""You are an HR Manager AI specialized in detailed candidate evaluation.
 Your job is to rank pre-filtered candidates based on comprehensive criteria.
 You'll analyze skills, experience, location, and CV relevance for in-depth matching.
-Explain your reasoning clearly and provide justification for candidate rankings.""",
-            llm_config=self.config_list,
+Explain your reasoning clearly and provide justification for candidate rankings.
+
+IMPORTANT: After ranking candidates, you MUST respond with a message that includes the phrase 
+'top candidates' to signal that you have completed your evaluation.""",
+            llm_config=llm_config,
             description="Ranks candidates based on comprehensive evaluation",
             is_termination_msg=is_termination_msg,
             human_input_mode="NEVER"
@@ -93,7 +131,8 @@ Explain your reasoning clearly and provide justification for candidate rankings.
             description="Talent Matching System that executes functions",
             is_termination_msg=is_termination_msg,
             system_message="You execute functions on behalf of the agents and facilitate their communication.",
-            default_auto_reply="Function executed. Waiting for next instructions."
+            default_auto_reply="Function executed. Waiting for next instructions.",
+            code_execution_config={"use_docker": False}  # Disable Docker requirement
         )
         
         # Register functions for the user proxy

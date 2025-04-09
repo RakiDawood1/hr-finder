@@ -17,6 +17,13 @@ from pydantic_models import JobRequirement, CandidateProfile, MatchResult
 # Import AutoGen-based framework
 from autogen_framework import AutoGenTalentMatcher
 
+# Try to import Gemini integration
+try:
+    from gemini_integration import get_gemini_config_from_env
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+
 # Import talent matching tool for data access
 from talent_matching_tool import TalentMatchingTool
 
@@ -33,7 +40,7 @@ class AutoGenMatchingEngine:
     the AutoGen-based multi-agent framework.
     """
     
-    def __init__(self, tool: TalentMatchingTool, config_list=None, verbose=True):
+    def __init__(self, tool: TalentMatchingTool, config_list=None, verbose=True, use_gemini=False):
         """
         Initialize the matching engine.
         
@@ -41,10 +48,22 @@ class AutoGenMatchingEngine:
             tool: Instance of TalentMatchingTool for data access
             config_list: Configuration for the LLM (if None, agents will use function calling only)
             verbose: Whether to display detailed agent conversations
+            use_gemini: Whether to use Gemini API (requires GEMINI_API_KEY in environment)
         """
         self.tool = tool
-        self.matcher = AutoGenTalentMatcher(config_list=config_list, verbose=verbose)
-        logger.info("AutoGen Matching Engine initialized")
+        self.matcher = AutoGenTalentMatcher(config_list=config_list, verbose=verbose, use_gemini=use_gemini)
+        
+        # Log which LLM we're using
+        if use_gemini and GEMINI_AVAILABLE:
+            gemini_config = get_gemini_config_from_env()
+            if gemini_config:
+                logger.info(f"AutoGen Matching Engine initialized with Gemini ({gemini_config.model_name})")
+            else:
+                logger.info("AutoGen Matching Engine initialized with function-only mode (Gemini requested but not configured)")
+        elif config_list:
+            logger.info("AutoGen Matching Engine initialized with custom LLM configuration")
+        else:
+            logger.info("AutoGen Matching Engine initialized in function-only mode")
     
     def match_job_to_candidates(
         self,
@@ -172,9 +191,12 @@ def main():
     # Get credentials path from environment
     credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS', 'credentials.json')
     
+    # Check for Gemini API key
+    use_gemini = bool(os.getenv('GEMINI_API_KEY'))
+    
     # Initialize the tool and engine
     tool = TalentMatchingTool(credentials_path)
-    engine = AutoGenMatchingEngine(tool, config_list=None, verbose=True)
+    engine = AutoGenMatchingEngine(tool, config_list=None, verbose=True, use_gemini=use_gemini)
     
     # Example: Match job row 2 to candidates
     job_row = 2

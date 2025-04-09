@@ -17,6 +17,13 @@ import logging
 from talent_matching_tool import TalentMatchingTool
 from autogen_matching_engine import AutoGenMatchingEngine
 
+# Try to import Gemini integration
+try:
+    from gemini_integration import get_gemini_config_from_env
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -40,6 +47,8 @@ def parse_arguments():
                       help='Enable verbose agent conversations')
     parser.add_argument('--llm-key', type=str, default=None,
                       help='API key for LLM (optional, leave empty to use function-only agents)')
+    parser.add_argument('--use-gemini', action='store_true',
+                      help='Use Google Gemini API (requires GEMINI_API_KEY in environment)')
     return parser.parse_args()
 
 def setup_environment():
@@ -73,7 +82,7 @@ def get_llm_config(api_key=None):
     }
 
 def find_candidates_for_job(job_row: int, min_threshold: float = 0.3, top_n: int = 10, 
-                          llm_key: str = None, verbose: bool = False) -> Dict[str, Any]:
+                          llm_key: str = None, verbose: bool = False, use_gemini: bool = False) -> Dict[str, Any]:
     """
     Find suitable candidates for the specified job using AutoGen.
     
@@ -83,6 +92,7 @@ def find_candidates_for_job(job_row: int, min_threshold: float = 0.3, top_n: int
         top_n: Maximum number of candidates to return
         llm_key: API key for LLM (optional)
         verbose: Whether to show detailed agent conversations
+        use_gemini: Whether to use Google Gemini API
         
     Returns:
         Dictionary with match results
@@ -93,11 +103,18 @@ def find_candidates_for_job(job_row: int, min_threshold: float = 0.3, top_n: int
     # Initialize the main components
     tool = TalentMatchingTool(credentials_path)
     
-    # Get LLM config if API key is provided
-    config_list = get_llm_config(llm_key)
+    # Get LLM config if API key is provided (and we're not using Gemini)
+    config_list = None
+    if llm_key and not use_gemini:
+        config_list = get_llm_config(llm_key)
+    
+    # Check if Gemini is requested but not available
+    if use_gemini and not GEMINI_AVAILABLE:
+        logger.warning("Gemini integration requested but not available. Please install 'google-generativeai' package.")
+        use_gemini = False
     
     # Initialize the AutoGen-based engine
-    engine = AutoGenMatchingEngine(tool, config_list=config_list, verbose=verbose)
+    engine = AutoGenMatchingEngine(tool, config_list=config_list, verbose=verbose, use_gemini=use_gemini)
     
     # Match job to candidates
     return engine.match_job_to_candidates(job_row, min_threshold, top_n)
@@ -152,6 +169,20 @@ def save_results_to_file(results: Dict[str, Any], output_path: str):
     
     print(f"Results saved to {output_path}")
 
+def check_gemini_config():
+    """Check if Gemini API is configured."""
+    if not GEMINI_AVAILABLE:
+        logger.warning("Gemini integration not available. Please install 'google-generativeai' package.")
+        return False
+    
+    api_key = os.getenv('GEMINI_API_KEY')
+    if not api_key:
+        logger.warning("Gemini API key not found in environment. Please set GEMINI_API_KEY in your .env file.")
+        return False
+    
+    logger.info(f"Gemini API configured with model: {os.getenv('GEMINI_MODEL_NAME', 'gemini-1.5-pro')}")
+    return True
+
 def main():
     """Main entry point for the AutoGen-based Talent Matching Tool."""
     # Parse command-line arguments
@@ -165,6 +196,12 @@ def main():
     if not setup_environment():
         return 1
     
+    # Check if we're using Gemini
+    if args.use_gemini:
+        if not check_gemini_config():
+            logger.error("Gemini API not properly configured. Please check your settings.")
+            return 1
+    
     # Validate arguments
     if not args.job:
         logger.error("Please specify a job row number with --job")
@@ -177,7 +214,8 @@ def main():
         args.threshold, 
         args.top,
         args.llm_key,
-        args.verbose
+        args.verbose,
+        args.use_gemini
     )
     
     # Display results
