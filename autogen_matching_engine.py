@@ -19,7 +19,7 @@ from autogen_framework import AutoGenTalentMatcher
 
 # Try to import Gemini integration
 try:
-    from gemini_integration import get_gemini_config_from_env
+    from gemini_integrations import get_gemini_config_from_env
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False

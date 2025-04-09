@@ -25,7 +25,7 @@ from pydantic_models import JobRequirement, CandidateProfile, Skill, MatchResult
 
 # Import Gemini integration if available
 try:
-    from gemini_integration import get_gemini_config_from_env
+    from gemini_integrations import get_gemini_config_from_env
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
@@ -87,43 +87,42 @@ class AutoGenTalentMatcher:
         # Set up LLM config
         llm_config = self.config_list
         
-        # For Gemini, we need to set up a custom completion function
-        gemini_completion_function = None
-        if self.use_gemini and GEMINI_AVAILABLE and self.gemini_config:
-            gemini_completion_function = self.gemini_config.create_gemini_completion_function()
-        
         # Create the coordinator agent
         self.coordinator_agent = autogen.AssistantAgent(
             name="CoordinatorAgent",
             system_message="""You are a Talent Coordinator AI specialized in initial candidate matching.
-Your job is to filter job candidates based on basic criteria and prepare data for the HR Manager.
-You'll analyze skills, experience, and CV content to find potential matches for a job.
-Communicate clearly and focus on objective criteria for matching.
+    Your job is to filter job candidates based on basic criteria and prepare data for the HR Manager.
+    You'll analyze skills, experience, and CV content to find potential matches for a job.
+    Communicate clearly and focus on objective criteria for matching.
 
-IMPORTANT: After processing candidates, you MUST respond with a message that includes the phrase 
-'matching complete' to signal that you have finished your task.""",
+    IMPORTANT: After processing candidates, you MUST respond with a message that includes the phrase 
+    'matching complete' to signal that you have finished your task.""",
             llm_config=llm_config,
             description="Filters candidates based on initial criteria",
             is_termination_msg=is_termination_msg,
-            human_input_mode="NEVER"
+            human_input_mode="NEVER",
+            max_consecutive_auto_reply=10  # Add this line to fix the timeout issue
         )
         
-        # Create the HR manager agent
+        # Similar modification for HR manager agent
         self.hr_manager_agent = autogen.AssistantAgent(
             name="HRManagerAgent",
             system_message="""You are an HR Manager AI specialized in detailed candidate evaluation.
-Your job is to rank pre-filtered candidates based on comprehensive criteria.
-You'll analyze skills, experience, location, and CV relevance for in-depth matching.
-Explain your reasoning clearly and provide justification for candidate rankings.
+    Your job is to rank pre-filtered candidates based on comprehensive criteria.
+    You'll analyze skills, experience, location, and CV relevance for in-depth matching.
+    Explain your reasoning clearly and provide justification for candidate rankings.
 
-IMPORTANT: After ranking candidates, you MUST respond with a message that includes the phrase 
-'top candidates' to signal that you have completed your evaluation.""",
+    IMPORTANT: After ranking candidates, you MUST respond with a message that includes the phrase 
+    'top candidates' to signal that you have completed your evaluation.""",
             llm_config=llm_config,
             description="Ranks candidates based on comprehensive evaluation",
             is_termination_msg=is_termination_msg,
-            human_input_mode="NEVER"
+            human_input_mode="NEVER",
+            max_consecutive_auto_reply=10  # Add this line to fix the timeout issue
         )
         
+        # No changes needed for the user proxy
+            
         # Create the user proxy for function execution
         self.user_proxy = autogen.UserProxyAgent(
             name="TalentMatchingSystem",

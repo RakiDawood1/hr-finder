@@ -115,7 +115,67 @@ class TalentMatchingTool:
         job_dict = self.get_job_details(row_number)
         if not job_dict:
             return None
+        
+        try:
+            # Get raw data from the sheet to access columns by index
+            result = self.sheets_service.spreadsheets().values().get(
+                spreadsheetId=self.jobs_sheet_id,
+                range=self.jobs_range
+            ).execute()
             
+            values = result.get('values', [])
+            if values and len(values) > row_number - 1:
+                headers = values[0]
+                row_data = values[row_number - 1]
+                
+                # Use column E as the job title (index 4)
+                if len(headers) > 4 and len(row_data) > 4:
+                    col_e_header = headers[4]  # "Roles Looking to Fill"
+                    col_e_value = row_data[4]
+                    
+                    if col_e_value:
+                        title_key = next((key for key in job_dict.keys() if key.lower() == "title"), None)
+                        if title_key:
+                            # Update existing Title field
+                            job_dict[title_key] = col_e_value
+                        else:
+                            # Add a new Title field
+                            job_dict["Title"] = col_e_value
+                
+                # Map "Skill and Requirement" to RequiredSkills
+                col_g_index = 6  # Column G (index 6)
+                if len(headers) > col_g_index and len(row_data) > col_g_index:
+                    col_g_header = headers[col_g_index]  # Should be "Skill and Requirement"
+                    col_g_value = row_data[col_g_index]
+                    
+                    if col_g_value and "Skill" in col_g_header:
+                        job_dict["RequiredSkills"] = col_g_value
+                
+                # Add appropriate experience level based on column F
+                col_f_index = 5  # Column F (index 5)
+                if len(headers) > col_f_index and len(row_data) > col_f_index:
+                    col_f_header = headers[col_f_index]  # Should be "Experience Level"
+                    col_f_value = row_data[col_f_index]
+                    
+                    if col_f_value and "Experience" in col_f_header:
+                        job_dict["ExperienceLevel"] = col_f_value
+                        
+                        # Try to extract years of experience
+                        import re
+                        years_match = re.search(r'(\d+)[\s-]*(\d*)', col_f_value)
+                        if years_match:
+                            min_years = int(years_match.group(1))
+                            job_dict["YearsExperience"] = str(min_years)
+                
+                # Add additional skills if needed based on job title
+                if "Software Engineer" in job_dict.get("Title", ""):
+                    # Add some preferred skills for software engineers if not already defined
+                    if "PreferredSkills" not in job_dict or not job_dict["PreferredSkills"]:
+                        job_dict["PreferredSkills"] = "Git, Docker, AWS, CI/CD, Cloud Architecture"
+        
+        except Exception as e:
+            print(f"Warning: Error while enhancing job data: {e}")
+        
         try:
             return parse_job_to_model(job_dict)
         except Exception as e:
