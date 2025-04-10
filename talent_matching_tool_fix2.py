@@ -62,6 +62,37 @@ class TalentMatchingTool:
         # Column index for CV links in talents sheet
         self.cv_column_index = int(os.getenv('CV_COLUMN_INDEX', '0'))
         
+        # Cache for column indices 
+        self._talents_col_indices = None
+        
+    def _get_talents_column_indices(self):
+        """Get important column indices for the talents sheet to avoid hard-coding."""
+        if self._talents_col_indices is not None:
+            return self._talents_col_indices
+            
+        result = self.sheets_service.spreadsheets().values().get(
+            spreadsheetId=self.talents_sheet_id,
+            range=self.talents_range
+        ).execute()
+        
+        values = result.get('values', [])
+        headers = values[0] if values else []
+        
+        # Find key column indices
+        indices = {
+            'name': next((i for i, h in enumerate(headers) if h and "Name" in h), 0),
+            'skills': next((i for i, h in enumerate(headers) if h and "Skills" in h), 3),
+            'experience': next((i for i, h in enumerate(headers) if h and "Experience" in h), 6),
+            'position': next((i for i, h in enumerate(headers) if h and "Position" in h), 5),
+            'job_preference': next((i for i, h in enumerate(headers) if h and ("Applying" in h or "Job" in h and "Looking" in h)), 5),
+            'location': next((i for i, h in enumerate(headers) if h and "Location" in h), 4),
+            'cv': self.cv_column_index
+        }
+        
+        print(f"Talent Sheet Column Indices: {indices}")
+        self._talents_col_indices = indices
+        return indices
+        
     def get_job_details(self, row_number: int) -> Dict[str, Any]:
         """
         Retrieve details for a specific job from the Jobs Sheet.
@@ -161,7 +192,6 @@ class TalentMatchingTool:
                         job_dict["ExperienceLevel"] = col_f_value
                         
                         # Try to extract years of experience
-                        import re
                         years_match = re.search(r'(\d+)[\s-]*(\d*)', col_f_value)
                         if years_match:
                             min_years = int(years_match.group(1))
@@ -381,6 +411,71 @@ class TalentMatchingTool:
         
         return talent_dict, cv_content
     
+    def _enhance_talent_from_sheet(self, talent_dict: Dict[str, Any], row_data: List, headers: List) -> Dict[str, Any]:
+        """
+        Helper function to enhance talent data using raw sheet data.
+        
+        Args:
+            talent_dict: Dictionary with current talent data
+            row_data: Raw row data from the sheet
+            headers: Sheet headers
+            
+        Returns:
+            Enhanced talent dictionary
+        """
+        col_indices = self._get_talents_column_indices()
+        
+        # Set experience data from the correct column
+        exp_col_idx = col_indices['experience']
+        if len(row_data) > exp_col_idx:
+            exp_value = row_data[exp_col_idx]
+            if exp_value:
+                # Extract years as a number
+                years_match = re.search(r'(\d+)', exp_value)
+                if years_match:
+                    # Direct assignment
+                    years_exp = int(years_match.group(1))
+                    talent_dict["YearsExperience"] = years_exp
+                    talent_dict["years_of_experience"] = years_exp  # Add both forms
+                    print(f"Set experience for {talent_dict.get('Name', 'unknown')}: {years_exp} years")
+        
+        # Set position data from the correct column (job title)
+        pos_col_idx = col_indices['position']
+        if len(row_data) > pos_col_idx:
+            pos_value = row_data[pos_col_idx]
+            if pos_value:
+                # Look for a key that could contain job title
+                title_keys = ["CurrentTitle", "JobTitle", "Current Title", "Job Title", "Title", "Position"]
+                found_key = next((key for key in title_keys if key in talent_dict), None)
+                
+                if found_key:
+                    talent_dict[found_key] = pos_value
+                else:
+                    talent_dict["CurrentTitle"] = pos_value
+        
+        # Set job preference data from the correct column (what job they're applying for)
+        job_pref_col_idx = col_indices['job_preference']
+        if len(row_data) > job_pref_col_idx:
+            job_pref_value = row_data[job_pref_col_idx]
+            if job_pref_value:
+                talent_dict["position_preference"] = job_pref_value
+                talent_dict["jobs_applying_for"] = job_pref_value
+                print(f"Set job preference for {talent_dict.get('Name', 'unknown')}: '{job_pref_value}'")
+        
+        # Set skills data from the correct column
+        skills_col_idx = col_indices['skills']
+        if len(row_data) > skills_col_idx:
+            skills_value = row_data[skills_col_idx]
+            if skills_value:
+                # Look for a key that could contain skills
+                skills_key = next((key for key in talent_dict.keys() if key.lower() == "skills"), None)
+                if skills_key:
+                    talent_dict[skills_key] = skills_value
+                else:
+                    talent_dict["Skills"] = skills_value
+        
+        return talent_dict
+    
     def get_talent_model(self, row_number: int) -> Optional[CandidateProfile]:
         """
         Retrieve and validate talent details as a Pydantic model.
@@ -396,7 +491,7 @@ class TalentMatchingTool:
             return None
         
         try:
-            # Get raw data from the sheet to access columns by index
+            # Get raw data from the sheet to enhance talent data
             result = self.sheets_service.spreadsheets().values().get(
                 spreadsheetId=self.talents_sheet_id,
                 range=self.talents_range
@@ -410,50 +505,20 @@ class TalentMatchingTool:
                 
                 if row_idx is not None:
                     row_data = values[row_idx]
-                    
-                    # Check for Experience column (typically column G, index 6)
-                    exp_col_index = 6  # Assuming column G
-                    if len(headers) > exp_col_index and len(row_data) > exp_col_index:
-                        exp_col_header = headers[exp_col_index]
-                        exp_col_value = row_data[exp_col_index]
-                        
-                        # Update Years Experience if it exists
-                        if exp_col_value and "Experience" in exp_col_header:
-                            import re
-                            # Extract numeric value (e.g., "8 years" -> 8)
-                            years_match = re.search(r'(\d+)', exp_col_value)
-                            if years_match:
-                                years_exp = int(years_match.group(1))
-                                # Add to talent_dict if not already there
-                                years_key = next((key for key in talent_dict.keys() 
-                                               if "years" in key.lower() and "experience" in key.lower()), None)
-                                
-                                if years_key:
-                                    talent_dict[years_key] = years_exp
-                                else:
-                                    talent_dict["YearsExperience"] = years_exp
-                                print(f"Updated experience for {talent_dict.get('Name', 'candidate')}: {years_exp} years")
-                    
-                    # Extract additional skills if available (typically column D, index 3)
-                    skills_col_index = 3  # Assuming column D
-                    if len(headers) > skills_col_index and len(row_data) > skills_col_index:
-                        skills_col_header = headers[skills_col_index]
-                        skills_col_value = row_data[skills_col_index]
-                        
-                        if skills_col_value and "Skills" in skills_col_header:
-                            skills_key = next((key for key in talent_dict.keys() if key.lower() == "skills"), None)
-                            if skills_key:
-                                # Append to existing skills if not already there
-                                if skills_col_value not in talent_dict[skills_key]:
-                                    talent_dict[skills_key] = f"{talent_dict[skills_key]}, {skills_col_value}"
-                            else:
-                                talent_dict["Skills"] = skills_col_value
+                    talent_dict = self._enhance_talent_from_sheet(talent_dict, row_data, headers)
         
         except Exception as e:
             print(f"Warning: Error while enhancing talent data: {e}")
             
         try:
-            return parse_candidate_to_model(talent_dict, cv_content)
+            model = parse_candidate_to_model(talent_dict, cv_content)
+            if model.years_of_experience is None or model.years_of_experience == 0:
+                # Double-check the years_of_experience
+                years_exp = talent_dict.get("YearsExperience") or talent_dict.get("years_of_experience")
+                if years_exp:
+                    model.years_of_experience = float(years_exp)
+                    print(f"Fixed years of experience for {model.name}: {model.years_of_experience}")
+            return model
         except Exception as e:
             print(f"Error parsing candidate to model: {e}")
             return None
@@ -500,64 +565,67 @@ class TalentMatchingTool:
         values = result.get('values', [])
         headers = values[0] if values else []
         
-        # Find column indices for key data
-        exp_col_index = next((i for i, h in enumerate(headers) 
-                            if h and "Experience" in h), 6)  # Default to 6 (column G)
-        skills_col_index = next((i for i, h in enumerate(headers) 
-                               if h and "Skills" in h), 3)  # Default to 3 (column D)
-        
-        all_talents_with_cvs = self.process_all_talents_with_cvs()
+        # Process all talents with enhanced approach
         talent_models = []
         
-        for i, (talent_dict, cv_content) in enumerate(all_talents_with_cvs):
+        for i, row_data in enumerate(values[1:], 1):  # Skip header row
             try:
-                # Get row number for this talent (2-based index for spreadsheet rows)
-                row_number = i + 2
+                # Create base talent dictionary from row data
+                talent_dict = {}
+                for j, header in enumerate(headers):
+                    if j < len(row_data):
+                        talent_dict[header] = row_data[j]
+                    else:
+                        talent_dict[header] = ""
                 
-                # Get spreadsheet row data for additional parsing
-                if values and len(values) > i + 1:
-                    row_data = values[i + 1]
-                    
-                    # Update experience if available
-                    if len(row_data) > exp_col_index:
-                        exp_col_value = row_data[exp_col_index]
-                        if exp_col_value:
-                            import re
-                            years_match = re.search(r'(\d+)', exp_col_value)
-                            if years_match:
-                                years_exp = int(years_match.group(1))
-                                # Add to talent_dict
-                                years_key = next((key for key in talent_dict.keys() 
-                                               if "years" in key.lower() and "experience" in key.lower()), None)
-                                
-                                if years_key:
-                                    talent_dict[years_key] = years_exp
-                                else:
-                                    talent_dict["YearsExperience"] = years_exp
-                                print(f"Set experience for {talent_dict.get('Name', f'row {row_number}')}: {years_exp} years")
-                    
-                    # Update skills if available
-                    if len(row_data) > skills_col_index:
-                        skills_col_value = row_data[skills_col_index]
-                        if skills_col_value:
-                            skills_key = next((key for key in talent_dict.keys() if key.lower() == "skills"), None)
-                            if skills_key:
-                                # Append to existing skills if not already there
-                                if skills_col_value not in talent_dict[skills_key]:
-                                    talent_dict[skills_key] = f"{talent_dict[skills_key]}, {skills_col_value}"
-                            else:
-                                talent_dict["Skills"] = skills_col_value
+                # Add row number for reference
+                row_number = i + 1  # +1 because we skipped header and i is 0-based
+                talent_dict["row_number"] = row_number
                 
+                # Get CV content
+                cv_col_idx = self.cv_column_index
+                cv_link = row_data[cv_col_idx] if cv_col_idx < len(row_data) else ""
+                cv_content = self.get_cv_content(cv_link) if cv_link else "No CV link provided."
+                
+                # Enhance the talent data using raw sheet data
+                talent_dict = self._enhance_talent_from_sheet(talent_dict, row_data, headers)
+                
+                # Parse to model
                 model = parse_candidate_to_model(talent_dict, cv_content)
+                
+                # Double-check the years_of_experience
+                if model.years_of_experience is None or model.years_of_experience == 0:
+                    years_exp = talent_dict.get("YearsExperience") or talent_dict.get("years_of_experience")
+                    if years_exp:
+                        model.years_of_experience = float(years_exp)
+                        print(f"Fixed years of experience for {model.name}: {model.years_of_experience}")
+                
+                # Set job preference field if missing
+                if not hasattr(model, 'jobs_applying_for') or not model.jobs_applying_for:
+                    col_indices = self._get_talents_column_indices()
+                    job_pref_col_idx = col_indices['job_preference']
+                    if len(row_data) > job_pref_col_idx:
+                        job_pref_value = row_data[job_pref_col_idx]
+                        if job_pref_value:
+                            setattr(model, 'jobs_applying_for', job_pref_value)
+                
                 talent_models.append(model)
             except Exception as e:
-                print(f"Error parsing candidate {talent_dict.get('Name', f'at row {i+2}')} to model: {e}")
+                print(f"Error parsing candidate at row {i+1} to model: {e}")
                 # Continue processing other candidates even if one fails
                 continue
                 
+        # Add a debugging step to ensure candidates are correctly processed
+        print(f"\nProcessed {len(talent_models)} candidates:")
+        for model in talent_models:
+            job_preference = getattr(model, 'jobs_applying_for', None) or getattr(model, 'position_preference', None) or 'Unknown'
+            print(f"  - {model.name}: {model.years_of_experience} years experience, " +
+                 f"Job Preference: '{job_preference}', " +
+                 f"Skills: {', '.join([s.name for s in model.skills[:3]])}" +
+                 (", ..." if len(model.skills) > 3 else ""))
+                
         return talent_models
 
-# Example usage
 def main():
     # Path to your service account credentials JSON file
     credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS', 'credentials.json')
@@ -585,9 +653,10 @@ def main():
         print(f"Name: {talent_model.name}")
         print(f"Skills: {', '.join([skill.name for skill in talent_model.skills])}")
         print(f"Years Experience: {talent_model.years_of_experience}")
+        print(f"Job Preference: {getattr(talent_model, 'jobs_applying_for', 'Not specified')}")
         print(f"CV content length: {len(talent_model.cv_content) if talent_model.cv_content else 0} characters")
     else:
         print("Failed to retrieve talent model")
-    
+
 if __name__ == "__main__":
     main()

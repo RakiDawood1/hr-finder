@@ -1,0 +1,207 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+Below is the planning document we are using for the project
+
+# Talent Matching Tool MVP Planning Document
+
+## Overview
+A tool that analyzes job requirements in one Google Sheet and matches them with suitable candidates from another Google Sheet by examining structured data and CV content, using a multi-agent framework with Pydantic data validation to ensure accurate and reliable talent matching.
+
+## Input & Output
+- **Input**: Row number of a job in the Jobs Sheet
+- **Output**: List of row numbers of suitable candidates from the Talents Sheet, ranked by match quality
+
+## System Components
+
+### 1. Google Sheets Integration
+- Set up authentication with Google Sheets API
+- Function to read data from the Jobs Sheet
+- Function to read data from the Talents Sheet
+- Function to read and process CV links from the dedicated CV column
+- Integration with Google Drive API to access documents via links
+
+### 2. Data Processing Layer
+- Parse job requirements from structured data
+- Extract skills, experience levels, and qualifications from job description
+- Standardize data formats for comparison
+- Process candidate profiles from the Talents Sheet
+- Extract and process text content from linked CVs
+- **Implement Pydantic schemas for consistent data validation and extraction**
+- **Create standardized data models for job requirements and candidate profiles**
+
+### 3. Multi-Agent Framework
+- **Agent 1: "The Coordinator"**
+  - Analyzes CVs and job requirements using validated Pydantic models
+  - Identifies potential matches based on initial criteria
+  - Presents relevant candidates to Agent 2 with supporting data
+  - Double-checks data consistency before handoff
+  - Handles data retrieval and preprocessing
+
+- **Agent 2: "The HR Manager"**
+  - Receives pre-filtered candidates from the Coordinator
+  - Performs in-depth analysis of candidate fit for specific job requirements
+  - Ranks candidates based on comprehensive evaluation criteria
+  - Double-checks rankings for accuracy and completeness
+  - Produces final ranked output with justification for rankings
+
+- **Agent Communication Protocol**
+  - Standardized data exchange between agents using Pydantic models
+  - Clear handoff points with validation checks
+  - Structured feedback loops for continuous improvement
+
+### 4. Matching Engine
+- Implements matching logic for the Coordinator agent
+- Creates weighting system for different factors (skills, experience, education, etc.)
+- Implements ranking algorithm for the HR Manager agent
+- Set threshold for minimum acceptable match score
+- **Uses validated data schemas for consistent comparison metrics**
+
+### 5. Results Presentation
+- Format and return ranked list of candidate row numbers
+- Include match scores and key matching factors
+- Option to include brief explanation of why each candidate matches
+
+### 5. Results Presentation
+- Format and return ranked list of candidate row numbers
+- Include match scores and key matching factors
+- Option to include brief explanation of why each candidate matches
+
+## Development Phases
+
+### Phase 1: Setup & Data Access (Completed)
+1. Create Google Cloud project and enable necessary APIs (Sheets, Drive)
+2. Set up authentication with service account
+3. Implement functions to read from both sheets
+4. Create dedicated CV document access system:
+   - Parse Google Drive links from the CV column
+   - Implement file ID extraction from various Drive link formats
+   - Add functionality to handle different document types (PDF, DOCX, TXT)
+   - Set up content extraction pipeline for each document type
+5. Test CV access and parsing from Google Drive links
+6. Create data structures for jobs and candidates
+7. **Define Pydantic models for job requirements and candidate profiles**
+
+### Phase 2: Multi-Agent Framework Implementation
+1. Implement Coordinator Agent:
+   - Build logic for initial candidate filtering
+   - Design data analysis and extraction functions
+   - Create validation checks for data consistency
+   - Develop standardized output format for HR Manager
+   - Implement double-check mechanisms for quality assurance
+
+2. Implement HR Manager Agent:
+   - Develop comprehensive evaluation criteria
+   - Build ranking algorithm for candidate comparison
+   - Create explanations for ranking decisions
+   - Implement verification checks for final output
+   - Design user-friendly presentation format
+
+3. Design Agent Communication Protocol:
+   - Define standardized data exchange formats
+   - Create handoff procedures between agents
+   - Implement error handling and recovery mechanisms
+   - Build logging system for debugging and improvement
+
+### Phase 3: Integration & Testing
+1. Connect all components into a unified pipeline
+2. Test with sample jobs and candidates
+3. Refine matching algorithm based on test results
+4. Optimize agent communication and performance
+5. Test edge cases and error handling
+6. Validate results against manual matching by HR professionals
+
+### Phase 4: MVP Release
+1. Create simple command-line interface
+2. Implement comprehensive error handling and logging
+3. Document usage instructions
+4. Create sample outputs for demonstration
+5. Document data validation patterns and error resolution steps
+
+## Technical Requirements
+
+### Google API Components
+- Google Sheets API
+- Google Drive API
+  - Read access for CV documents
+  - File metadata access
+  - Content download capabilities
+  - Support for various document formats
+- Authentication credentials
+- Appropriate permissions for service account
+- Proper sharing configuration for CV documents
+
+### Multi-Agent Framework Requirements
+- Clear role definition for each agent
+- Standardized data exchange protocols
+- Quality assurance mechanisms
+- Explainable decision-making processes
+- Efficient communication patterns
+
+### Python Packages
+- google-api-python-client (for Sheets and Drive API access)
+- google-auth (for authentication)
+- google-auth-oauthlib (for OAuth flow)
+- google-auth-httplib2 (for HTTP connections)
+- python-dotenv (for API key management)
+- pandas (for data manipulation)
+- requests (for API calls)
+- **pydantic (for data validation and schema definition)**
+- document parsing libraries:
+  - PyPDF2 or pdf2text (for PDF parsing)
+  - python-docx or docx2txt (for Word documents)
+  - textract (as a fallback for other formats)
+  - pypandoc (for handling various document conversions)
+
+## Considerations & Challenges
+
+### Technical Challenges
+- Handling large CV documents within context limits
+- Normalizing different terminology between job descriptions and CVs
+- Balancing precision and recall in candidate matching
+- Handling various CV formats and inconsistencies
+- Managing Google Drive access permissions
+- Dealing with broken or inaccessible CV links
+- Processing complex document formats (tables, images, headers/footers)
+- Handling multilingual CVs
+- **Managing validation errors in inconsistent data formats**
+- **Balancing strict validation with flexibility needed for real-world data**
+- **Coordinating efficient communication between agents**
+- **Ensuring consistent decision-making across the agent pipeline**
+- **Implementing effective quality control measures**
+
+### Data Privacy Considerations
+- Secure handling of candidate information
+- Compliance with data privacy regulations
+- Proper storage of API credentials
+
+### Performance Optimization
+- Optimizing data processing for large candidate pools
+- Efficient validation and transformation operations
+- Streamlining agent communication to minimize overhead
+- Progressive matching to filter obvious non-matches early
+- Strategic distribution of processing between agents
+
+## MVP Success Criteria
+1. Successfully retrieves job details from specified row
+2. Accesses and analyzes candidate data including CV content
+3. Coordinator Agent effectively identifies potential matches
+4. HR Manager Agent produces accurate and justified rankings
+5. Returns ordered list of matching candidates with reasonable accuracy
+6. Processes requests in a reasonable timeframe (<30 seconds for typical job posting)
+7. Successfully validates and normalizes data from different sources
+
+## Future Enhancements (Post-MVP)
+1. Web interface for easier access
+2. Bulk processing of multiple jobs
+3. Automated matching reports sent via email
+4. Integration with applicant tracking systems
+5. Feedback mechanism to improve matching over time
+6. CV suggestion feature to help candidates improve match potential
+7. **Advanced data validation with custom rules and domain-specific knowledge**
+8. **Enhanced agent specialization for specific industries or roles**
+9. **Add a third "Domain Expert" agent for specialized technical assessment**
+10. **Learning mechanism to improve agent decision-making over time**
+11. **Interactive mode allowing users to guide the agent selection process**

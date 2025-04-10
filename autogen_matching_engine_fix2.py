@@ -1,8 +1,8 @@
 """
 AutoGen-based Matching Engine for Talent Matching Tool
 
-This module provides the core matching functionality using Microsoft's AutoGen framework
-to match job requirements with candidate profiles.
+This module provides the core matching functionality using a simplified framework
+to match job requirements with candidate profiles while making the process visible.
 """
 
 from typing import List, Dict, Any, Tuple, Optional
@@ -15,7 +15,7 @@ import os
 from pydantic_models import JobRequirement, CandidateProfile, MatchResult
 
 # Import AutoGen-based framework
-from autogen_framework import AutoGenTalentMatcher
+from autogen_framework_fix2 import AutoGenTalentMatcher
 
 # Try to import Gemini integration
 try:
@@ -25,7 +25,7 @@ except ImportError:
     GEMINI_AVAILABLE = False
 
 # Import talent matching tool for data access
-from talent_matching_tool import TalentMatchingTool
+from talent_matching_tool_fix2 import TalentMatchingTool
 
 # Set up logging
 logging.basicConfig(
@@ -37,7 +37,7 @@ logger = logging.getLogger("autogen_matching_engine")
 class AutoGenMatchingEngine:
     """
     Engine for matching job requirements with candidate profiles using 
-    the AutoGen-based multi-agent framework.
+    a multi-step evaluation process with detailed output.
     """
     
     def __init__(self, tool: TalentMatchingTool, config_list=None, verbose=True, use_gemini=False):
@@ -47,23 +47,15 @@ class AutoGenMatchingEngine:
         Args:
             tool: Instance of TalentMatchingTool for data access
             config_list: Configuration for the LLM (if None, agents will use function calling only)
-            verbose: Whether to display detailed agent conversations
+            verbose: Whether to display detailed matching process
             use_gemini: Whether to use Gemini API (requires GEMINI_API_KEY in environment)
         """
         self.tool = tool
+        self.verbose = verbose
         self.matcher = AutoGenTalentMatcher(config_list=config_list, verbose=verbose, use_gemini=use_gemini)
         
-        # Log which LLM we're using
-        if use_gemini and GEMINI_AVAILABLE:
-            gemini_config = get_gemini_config_from_env()
-            if gemini_config:
-                logger.info(f"AutoGen Matching Engine initialized with Gemini ({gemini_config.model_name})")
-            else:
-                logger.info("AutoGen Matching Engine initialized with function-only mode (Gemini requested but not configured)")
-        elif config_list:
-            logger.info("AutoGen Matching Engine initialized with custom LLM configuration")
-        else:
-            logger.info("AutoGen Matching Engine initialized in function-only mode")
+        # Log which mode we're using
+        logger.info("AutoGen Matching Engine initialized with enhanced matching process")
     
     def match_job_to_candidates(
         self,
@@ -72,7 +64,7 @@ class AutoGenMatchingEngine:
         top_n: int = 10
     ) -> Dict[str, Any]:
         """
-        Match a job to suitable candidates using AutoGen agents.
+        Match a job to suitable candidates using the enhanced matching process.
         
         Args:
             job_row: Row number of the job in the Jobs Sheet
@@ -83,7 +75,7 @@ class AutoGenMatchingEngine:
             Dictionary with match results
         """
         start_time = datetime.now()
-        logger.info(f"Starting AutoGen matching process for job row {job_row}")
+        logger.info(f"Starting matching process for job row {job_row}")
         
         # Step 1: Retrieve job details as a validated model
         job_model = self.tool.get_job_model(job_row)
@@ -108,9 +100,14 @@ class AutoGenMatchingEngine:
         
         logger.info(f"Retrieved {len(all_candidates)} candidate profiles")
         
-        # Step 3: Use AutoGen framework to match candidates with simplified direct approach
-        # This avoids the timeout issues we were seeing with complex agent conversations
+        # Step 3: Use our enhanced matching framework
         try:
+            # Print banner for improved visibility
+            print("\n" + "="*80)
+            print(f"TALENT MATCHING PROCESS: {job_model.title}")
+            print("="*80)
+            
+            # Match candidates to job
             match_results, _ = self.matcher.match_candidates_to_job(
                 job_model,
                 all_candidates,
@@ -150,7 +147,7 @@ class AutoGenMatchingEngine:
             "match_details": match_results
         }
         
-        logger.info(f"Completed AutoGen matching process. Found {len(match_results)} suitable candidates in {execution_time:.2f} seconds")
+        logger.info(f"Completed matching process. Found {len(match_results)} suitable candidates in {execution_time:.2f} seconds")
         return result
     
     def _get_row_numbers_for_matched_candidates(self, match_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -183,9 +180,21 @@ class AutoGenMatchingEngine:
                 
                 # If email doesn't match or not available, try by name
                 if row_number is None:
-                    matching_rows = candidates_df[candidates_df['Name'] == candidate_name]
+                    # Case-insensitive name matching
+                    matching_rows = candidates_df[candidates_df['Name'].str.lower() == candidate_name.lower()]
                     if not matching_rows.empty:
                         row_number = matching_rows.iloc[0]['row_number']
+                        
+                    # Try partial name matching if exact match fails
+                    if row_number is None and len(candidate_name.split()) > 1:
+                        # Try matching first and last name separately
+                        name_parts = candidate_name.lower().split()
+                        for part in name_parts:
+                            if len(part) > 3:  # Only try with longer name parts
+                                matching_rows = candidates_df[candidates_df['Name'].str.lower().str.contains(part)]
+                                if not matching_rows.empty:
+                                    row_number = matching_rows.iloc[0]['row_number']
+                                    break
             
             results.append({
                 "name": candidate_name,
@@ -207,12 +216,9 @@ def main():
     # Get credentials path from environment
     credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS', 'credentials.json')
     
-    # Check for Gemini API key
-    use_gemini = bool(os.getenv('GEMINI_API_KEY'))
-    
     # Initialize the tool and engine
     tool = TalentMatchingTool(credentials_path)
-    engine = AutoGenMatchingEngine(tool, config_list=None, verbose=True, use_gemini=use_gemini)
+    engine = AutoGenMatchingEngine(tool, config_list=None, verbose=True)
     
     # Example: Match job row 2 to candidates
     job_row = 2

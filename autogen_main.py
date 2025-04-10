@@ -14,8 +14,8 @@ from pprint import pprint
 import logging
 
 # Import the main components
-from talent_matching_tool import TalentMatchingTool
-from autogen_matching_engine import AutoGenMatchingEngine
+from talent_matching_tool_fix2 import TalentMatchingTool
+from autogen_matching_engine_fix2 import AutoGenMatchingEngine
 
 # Try to import Gemini integration
 try:
