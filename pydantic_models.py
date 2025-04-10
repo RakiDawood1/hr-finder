@@ -101,6 +101,7 @@ class CandidateProfile(BaseModel):
     years_of_experience: Optional[float] = Field(None, ge=0)
     cv_content: Optional[str] = None
     cv_link: Optional[str] = None
+    jobs_applying_for: Optional[str] = None
     
     class Config:
         validate_assignment = True

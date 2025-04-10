@@ -84,8 +84,8 @@ def test_matching_for_job(job_row):
 
 def main():
     """Main function to test the updated system."""
-    # Test for job row 2 (Senior Software Engineer)
-    success = test_matching_for_job(2)
+    # Test for job row 3 (Senior Software Engineer)
+    success = test_matching_for_job(3)
     
     if success:
         print("\n✅ The updated system appears to be working correctly!")
