@@ -84,73 +84,98 @@ class AutoGenTalentMatcher:
                 return True
             return False
         
-        # Set up LLM config
-        llm_config = self.config_list
+        # We'll create function definitions for our tools
+        function_definitions = [
+            {
+                'name': 'filter_candidates',
+                'description': 'Filter candidates based on initial criteria',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'job': {
+                            'type': 'object',
+                            'description': 'Job requirement details'
+                        },
+                        'candidates': {
+                            'type': 'array',
+                            'description': 'List of candidate profiles'
+                        },
+                        'min_match_threshold': {
+                            'type': 'number',
+                            'description': 'Minimum match threshold (0.0 to 1.0)'
+                        }
+                    },
+                    'required': ['job', 'candidates', 'min_match_threshold']
+                }
+            },
+            {
+                'name': 'rank_candidates',
+                'description': 'Rank candidates based on comprehensive evaluation',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'job': {
+                            'type': 'object',
+                            'description': 'Job requirement details'
+                        },
+                        'filtered_candidates': {
+                            'type': 'array',
+                            'description': 'List of filtered candidate profiles'
+                        },
+                        'top_n': {
+                            'type': 'integer',
+                            'description': 'Maximum number of candidates to return'
+                        }
+                    },
+                    'required': ['job', 'filtered_candidates', 'top_n']
+                }
+            }
+        ]
+        
+        # Set up LLM config - for function-only mode
+        llm_config = None  # No LLM by default
+        
+        # Use provided LLM config if available
+        if self.config_list:
+            llm_config = self.config_list
         
         # Create the coordinator agent
-        self.coordinator_agent = autogen.AssistantAgent(
-            name="CoordinatorAgent",
-            system_message="""You are a Talent Coordinator AI specialized in initial candidate matching.
-    Your job is to filter job candidates based on basic criteria and prepare data for the HR Manager.
-    You'll analyze skills, experience, and CV content to find potential matches for a job.
-    Communicate clearly and focus on objective criteria for matching.
-
-    IMPORTANT: After processing candidates, you MUST respond with a message that includes the phrase 
-    'matching complete' to signal that you have finished your task.""",
-            llm_config=llm_config,
-            description="Filters candidates based on initial criteria",
-            is_termination_msg=is_termination_msg,
-            human_input_mode="NEVER",
-            max_consecutive_auto_reply=10  # Add this line to fix the timeout issue
-        )
+        # For function-only agents, we'll skip creating agents entirely
+        self.coordinator_agent = None
+        self.hr_manager_agent = None
         
-        # Similar modification for HR manager agent
-        self.hr_manager_agent = autogen.AssistantAgent(
-            name="HRManagerAgent",
-            system_message="""You are an HR Manager AI specialized in detailed candidate evaluation.
-    Your job is to rank pre-filtered candidates based on comprehensive criteria.
-    You'll analyze skills, experience, location, and CV relevance for in-depth matching.
-    Explain your reasoning clearly and provide justification for candidate rankings.
-
-    IMPORTANT: After ranking candidates, you MUST respond with a message that includes the phrase 
-    'top candidates' to signal that you have completed your evaluation.""",
-            llm_config=llm_config,
-            description="Ranks candidates based on comprehensive evaluation",
-            is_termination_msg=is_termination_msg,
-            human_input_mode="NEVER",
-            max_consecutive_auto_reply=10  # Add this line to fix the timeout issue
-        )
+        # Create a simplified direct approach
+        logger.info("Using direct matching approach (no agents)")
         
-        # No changes needed for the user proxy
-            
-        # Create the user proxy for function execution
+        # We'll still create the user proxy for consistency in the interface
         self.user_proxy = autogen.UserProxyAgent(
             name="TalentMatchingSystem",
             human_input_mode="NEVER",
             description="Talent Matching System that executes functions",
-            is_termination_msg=is_termination_msg,
-            system_message="You execute functions on behalf of the agents and facilitate their communication.",
-            default_auto_reply="Function executed. Waiting for next instructions.",
             code_execution_config={"use_docker": False}  # Disable Docker requirement
         )
         
         # Register functions for the user proxy
         self._register_functions()
+        
+
     
     def _register_functions(self):
         """Register functions that agents can call."""
-        self.user_proxy.register_function(
-            function_map={
-                "extract_candidate_info": self._extract_candidate_info,
-                "evaluate_skills_match": self._evaluate_skills_match,
-                "evaluate_experience_match": self._evaluate_experience_match,
-                "evaluate_cv_relevance": self._evaluate_cv_relevance,
-                "evaluate_location_match": self._evaluate_location_match,
-                "filter_candidates": self._filter_candidates,
-                "rank_candidates": self._rank_candidates_with_detail,
-                "generate_match_explanation": self._generate_match_explanation
-            }
-        )
+        # Register our key functions
+        function_map = {
+            "filter_candidates": self._filter_candidates,
+            "rank_candidates": self._rank_candidates_with_detail,
+            # Helper functions
+            "extract_candidate_info": self._extract_candidate_info,
+            "evaluate_skills_match": self._evaluate_skills_match,
+            "evaluate_experience_match": self._evaluate_experience_match,
+            "evaluate_cv_relevance": self._evaluate_cv_relevance,
+            "evaluate_location_match": self._evaluate_location_match,
+            "generate_match_explanation": self._generate_match_explanation
+        }
+        
+        self.user_proxy.register_function(function_map=function_map)
     
     def _extract_candidate_info(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -588,89 +613,21 @@ class AutoGenTalentMatcher:
         job_dict = job.model_dump()
         candidate_dicts = [c.model_dump() for c in all_candidates]
         
-        # Set up the initial message with problem context
-        initial_message = {
-            "task": "talent_matching",
-            "job": job_dict,
-            "candidates_count": len(candidate_dicts),
-            "min_match_threshold": min_match_threshold,
-            "top_n": top_n
-        }
+        # Simplified direct approach when dealing with function-only mode
+        if not self.config_list or not self.verbose:
+            logger.info("Using direct matching approach (bypassing agent conversation)")
+            filtered_candidates = self._filter_candidates(job_dict, candidate_dicts, min_match_threshold)
+            ranked_candidates = self._rank_candidates_with_detail(job_dict, filtered_candidates, top_n)
+            return ranked_candidates, []
         
-        # Coordinator's step-by-step instructions
-        coordinator_instructions = f"""
-        As a Talent Coordinator Agent, follow these steps:
+        # Using direct matching approach - no agent conversation needed
+        logger.info("Using direct matching approach (simplified)")
         
-        1. Call the function 'filter_candidates' with the job details, candidates list, and minimum threshold of {min_match_threshold}
-        2. The function will return filtered candidates with initial match scores
-        3. Review the filtered candidates to ensure they meet basic requirements
-        4. Pass the filtered candidates to the HR Manager Agent for detailed ranking
-        
-        Be sure to explain what you are doing at each step.
-        """
-        
-        # HR Manager's step-by-step instructions
-        hr_manager_instructions = f"""
-        As an HR Manager Agent, follow these steps:
-        
-        1. Review the filtered candidates from the Coordinator Agent
-        2. Call the function 'rank_candidates' with the job details, filtered candidates, and top_n={top_n}
-        3. The function will return ranked candidates with detailed match analysis
-        4. Review the ranking and provide your assessment of the top candidates
-        5. Return the final list of candidates with a 'final_candidates' key in your response
-        
-        Be sure to explain your reasoning for the rankings.
-        """
-        
-        # Create a chat for the agents to collaborate
-        self.user_proxy.initiate_chat(
-            self.coordinator_agent,
-            message=f"""
-            I need to match candidates to a job using our talent matching system.
-
-            Job details:
-            - Title: {job.title}
-            - Department: {job.department or 'Not specified'}
-            - Required skills: {', '.join(skill.name for skill in job.required_skills)}
-            - Preferred skills: {', '.join(skill.name for skill in job.preferred_skills)}
-            - Experience level: {job.experience_level.value if job.experience_level else 'Not specified'}
-            - Minimum years: {job.min_years_experience or 'Not specified'}
-            - Location: {job.location or 'Not specified'}
-            - Remote friendly: {'Yes' if job.remote_friendly else 'No'}
-            
-            There are {len(all_candidates)} candidates to evaluate.
-            
-            {coordinator_instructions}
-            """
-        )
-        
-        # Get the chat results
-        chat_result = self.user_proxy.last_message()
-        
-        # Create a simplified summary for display
-        summary = []
-        for match in summary:
-            summary.append({
-                "name": match.get("name", ""),
-                "match_score": match.get("match_score", 0),
-                "required_skills_matched": match.get("required_skills_matched", "0%"),
-                "experience_match": match.get("experience_match", "No"),
-                "location_match": match.get("location_match", "No"),
-                "explanation": match.get("explanation", "")
-            })
-            
-        # Process and return results
-        if isinstance(chat_result, dict) and "final_candidates" in chat_result:
-            return chat_result["final_candidates"], summary
-            
-        # Fallback to direct matching if agents didn't complete correctly
-        logger.warning("AutoGen conversation did not complete normally, falling back to direct matching")
-        
-        # Directly execute the matching process
+        # Fallback to direct matching
         filtered_candidates = self._filter_candidates(job_dict, candidate_dicts, min_match_threshold)
         ranked_candidates = self._rank_candidates_with_detail(job_dict, filtered_candidates, top_n)
         
-        return ranked_candidates, summary
+        return ranked_candidates, []
 
 
 # If we need LLM configuration, it would go here

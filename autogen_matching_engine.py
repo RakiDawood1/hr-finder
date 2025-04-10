@@ -108,13 +108,29 @@ class AutoGenMatchingEngine:
         
         logger.info(f"Retrieved {len(all_candidates)} candidate profiles")
         
-        # Step 3: Use AutoGen framework to match candidates
-        match_results, _ = self.matcher.match_candidates_to_job(
-            job_model,
-            all_candidates,
-            min_match_threshold,
-            top_n
-        )
+        # Step 3: Use AutoGen framework to match candidates with simplified direct approach
+        # This avoids the timeout issues we were seeing with complex agent conversations
+        try:
+            match_results, _ = self.matcher.match_candidates_to_job(
+                job_model,
+                all_candidates,
+                min_match_threshold,
+                top_n
+            )
+            
+            # Log successful matching
+            logger.info(f"Successfully matched {len(match_results)} candidates to job {job_model.title}")
+            
+        except Exception as e:
+            logger.error(f"Error during matching process: {str(e)}")
+            import traceback
+            logger.error(f"Stack trace: {traceback.format_exc()}")
+            return {
+                "success": False,
+                "error": f"Matching error: {str(e)}",
+                "job_row": job_row,
+                "job_title": job_model.title
+            }
         
         # Step 4: Retrieve original row numbers for matched candidates
         matched_candidates_with_rows = self._get_row_numbers_for_matched_candidates(match_results)
