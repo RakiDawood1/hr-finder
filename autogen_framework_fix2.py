@@ -513,49 +513,38 @@ class AutoGenTalentMatcher:
     ) -> List[Dict[str, Any]]:
         """
         Filter candidates based on initial criteria.
-        
-        Args:
-            job: Dictionary representation of a JobRequirement
-            candidates: List of dictionaries for candidate profiles
-            min_match_threshold: Minimum match threshold (0.0 to 1.0)
-            
-        Returns:
-            List of dictionaries with filtered candidates and match data
         """
-        # Analyze job requirements for more detailed matching
-        job_analysis = self._analyze_job_requirements(job)
+        # Get role expertise requirements first
+        role_expertise = self._research_role_requirements(
+            job.get("title", ""),
+            job.get("important_qualities", "")  # Column I content
+        )
         
         filtered_results = []
-        
-        # Print total candidates being evaluated
         print(f"\nEvaluating {len(candidates)} candidates for {job.get('title', '')}...")
         
         for candidate in candidates:
-            # Get candidate name for logging
             candidate_name = candidate.get("name", "Unknown")
             
-            # Calculate initial match scores
+            # Calculate match scores
             skills_match = self._evaluate_skills_match(job, candidate)
             experience_match = self._evaluate_experience_match(job, candidate)
-            cv_relevance = self._evaluate_cv_relevance(job, candidate)
+            cv_match = self._evaluate_candidate_cv(candidate, role_expertise)
             location_match = self._evaluate_location_match(job, candidate)
-            position_match = self._evaluate_position_preference_match(job, candidate)
             
             # Calculate weighted initial score with updated weights
             weights = {
-                "skills_match": 0.4,       # 40% weight on skills
-                "experience_match": 0.3,    # 30% weight on experience
-                "cv_relevance": 0.1,        # 10% weight on CV relevance
-                "location_match": 0.1,      # 10% weight on location
-                "position_match": 0.1       # 10% weight on position preference
+                "skills_match": 0.3,      # 30% weight on skills
+                "experience_match": 0.2,   # 20% weight on experience
+                "cv_match": 0.4,          # 40% weight on CV content
+                "location_match": 0.1      # 10% weight on location
             }
             
             match_data = {
                 "skills_match": skills_match,
                 "experience_match": experience_match,
-                "cv_relevance": cv_relevance,
-                "location_match": location_match,
-                "position_match": position_match
+                "cv_match": cv_match,
+                "location_match": location_match
             }
             
             initial_score = sum(match_data[key] * weights[key] for key in weights)
@@ -563,16 +552,10 @@ class AutoGenTalentMatcher:
             # Print match scores for visibility
             print(f"\nCandidate: {candidate_name}")
             print(f"  Skills Match: {skills_match:.2f}")
-            print(f"  Experience Match: {experience_match:.2f} (Years: {candidate.get('years_of_experience', 0)})")
-            print(f"  CV Relevance: {cv_relevance:.2f}")
+            print(f"  Experience Match: {experience_match:.2f}")
+            print(f"  CV Content Match: {cv_match:.2f}")
             print(f"  Location Match: {location_match:.2f}")
-            print(f"  Position Match: {position_match:.2f}")
             print(f"  Initial Score: {initial_score:.2f}")
-            
-            # Check if this matches Thomas Kumar by name
-            if "thomas" in candidate_name.lower() and "kumar" in candidate_name.lower():
-                print(f"  ** Found Thomas Kumar - ensuring he's included in results **")
-                initial_score = max(initial_score, min_match_threshold + 0.05)  # Ensure he passes threshold
             
             # Only keep candidates above the minimum threshold
             if initial_score >= min_match_threshold:
@@ -581,7 +564,8 @@ class AutoGenTalentMatcher:
                     "candidate": candidate,
                     "match_data": {
                         **match_data,
-                        "initial_match_score": initial_score
+                        "initial_match_score": initial_score,
+                        "role_expertise": role_expertise
                     }
                 })
             else:
@@ -590,12 +574,8 @@ class AutoGenTalentMatcher:
         # Sort by initial match score
         filtered_results.sort(key=lambda x: x["match_data"]["initial_match_score"], reverse=True)
         
-        # Print summary of filtered candidates
-        print(f"\nFiltered to {len(filtered_results)} candidates meeting minimum threshold of {min_match_threshold}:")
-        for i, result in enumerate(filtered_results, 1):
-            print(f"  {i}. {result['candidate'].get('name', 'Unknown')} - Score: {result['match_data']['initial_match_score']:.2f}")
-        
         return filtered_results
+
     
     def _detailed_skill_matching(self, job: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, bool]:
         """
@@ -627,25 +607,16 @@ class AutoGenTalentMatcher:
         return skill_matches
     
     def _generate_match_explanation(self, job: Dict[str, Any], candidate: Dict[str, Any],
-                                  required_match_pct: float, preferred_match_pct: float,
-                                  experience_match: bool, location_match: bool,
-                                  skill_match_details: Dict[str, bool]) -> str:
-        """
-        Generate a human-readable explanation of the match result.
-        
-        Args:
-            job: Dictionary representation of a JobRequirement
-            candidate: Dictionary representation of a CandidateProfile
-            required_match_pct: Percentage of required skills matched
-            preferred_match_pct: Percentage of preferred skills matched
-            experience_match: Whether experience requirements are met
-            location_match: Whether location requirements are met
-            skill_match_details: Dictionary of skill match details
-            
-        Returns:
-            A string explaining the match
-        """
+                             required_match_pct: float, preferred_match_pct: float,
+                             experience_match: bool, location_match: bool,
+                             skill_match_details: Dict[str, bool]) -> str:
+        """Generate a human-readable explanation of the match result."""
         explanation = []
+        
+        # Get CV analysis if available
+        cv_analysis = candidate.get("cv_analysis", {})
+        evidence_found = cv_analysis.get("evidence_found", [])
+        project_evaluations = cv_analysis.get("project_evaluation", [])
         
         # Skills summary
         if required_match_pct >= 90:
@@ -656,21 +627,23 @@ class AutoGenTalentMatcher:
             explanation.append(f"Moderate match for required skills ({required_match_pct:.0f}%).")
         else:
             explanation.append(f"Limited match for required skills ({required_match_pct:.0f}%).")
-            
-        if preferred_match_pct >= 70:
-            explanation.append(f"Strong match for preferred skills ({preferred_match_pct:.0f}%).")
-        elif preferred_match_pct >= 40:
-            explanation.append(f"Some preferred skills matched ({preferred_match_pct:.0f}%).")
-        else:
-            explanation.append(f"Few preferred skills matched ({preferred_match_pct:.0f}%).")
         
         # Experience
         min_years = job.get("min_years_experience", 0) or 0
         candidate_years = candidate.get("years_of_experience", 0) or 0
         if experience_match:
-            explanation.append(f"Meets experience requirements: {candidate_years} years (requirement: {min_years} years).")
+            explanation.append(f"Meets experience requirements with {candidate_years} years (requirement: {min_years} years).")
         else:
-            explanation.append(f"Below experience requirements: {candidate_years} years (requirement: {min_years} years).")
+            explanation.append(f"Below experience requirement with {candidate_years} years (requirement: {min_years} years).")
+        
+        # CV content analysis
+        if evidence_found:
+            explanation.append(f"Demonstrated expertise in: {', '.join(evidence_found[:3])}.")
+        
+        if project_evaluations:
+            relevant_projects = sum(1 for p in project_evaluations if p["relevance_score"] > 0.5)
+            if relevant_projects > 0:
+                explanation.append(f"Has {relevant_projects} relevant projects showing required capabilities.")
         
         # Location
         if location_match:
@@ -678,28 +651,16 @@ class AutoGenTalentMatcher:
                 explanation.append("Position is remote-friendly, and candidate prefers remote work.")
             elif candidate.get("willing_to_relocate"):
                 explanation.append("Candidate is willing to relocate for this position.")
-            elif job.get("location") and candidate.get("current_location") and job.get("location", "").lower() in candidate.get("current_location", "").lower():
+            elif job.get("location") and candidate.get("current_location"):
                 explanation.append(f"Location match: Candidate is in {candidate.get('current_location')}.")
-            else:
-                explanation.append("Location requirements are satisfied.")
         else:
             explanation.append("Location mismatch may require consideration.")
-        
-        # Job preference match
-        job_preference = candidate.get("position_preference", "") or candidate.get("jobs_applying_for", "")
-        job_title = job.get("title", "")
-        if job_preference:
-            is_related, similarity = self._are_job_titles_related(job_title, job_preference)
-            if is_related and similarity > 0.8:
-                explanation.append(f"Candidate is specifically looking for this type of role: '{job_preference}'.")
-            elif is_related:
-                explanation.append(f"Candidate is interested in related roles: '{job_preference}'.")
         
         # Key matching skills
         matched_skills = [skill for skill, matched in skill_match_details.items() if matched]
         if matched_skills:
             explanation.append(f"Matched skills: {', '.join(matched_skills[:5])}" + 
-                             (f" and {len(matched_skills)-5} more" if len(matched_skills) > 5 else ""))
+                            (f" and {len(matched_skills)-5} more" if len(matched_skills) > 5 else ""))
         
         # Missing key skills (focus on required only)
         required_skills = {skill.get("name", "").lower() for skill in job.get("required_skills", [])}
@@ -708,128 +669,307 @@ class AutoGenTalentMatcher:
             explanation.append(f"Missing required skills: {', '.join(missing_required)}.")
         
         return " ".join(explanation)
+        
+        def _rank_candidates_with_detail(self, job: Dict[str, Any], filtered_candidates: List[Dict[str, Any]], top_n: int = 10) -> List[Dict[str, Any]]:
+            """
+            Rank candidates based on comprehensive evaluation.
+            
+            Args:
+                job: Dictionary representation of a JobRequirement
+                filtered_candidates: List of dictionaries with filtered candidates and match data
+                top_n: Maximum number of candidates to return
+                
+            Returns:
+                List of dictionaries with ranked candidates and detailed match results
+            """
+            ranked_results = []
+            
+            print(f"\nPerforming detailed ranking of {len(filtered_candidates)} candidates...")
+            
+            for item in filtered_candidates:
+                candidate = item["candidate"]
+                candidate_name = candidate.get("name", "Unknown")
+                coord_match_data = item["match_data"]
+                
+                print(f"\nDetailed evaluation for candidate: {candidate_name}")
+                
+                # Perform detailed skill matching
+                skill_match_details = self._detailed_skill_matching(job, candidate)
+                
+                # Calculate skill match percentages
+                required_skills = {skill.get("name", "").lower() for skill in job.get("required_skills", [])}
+                preferred_skills = {skill.get("name", "").lower() for skill in job.get("preferred_skills", [])}
+                
+                required_matched = sum(1 for skill in required_skills if skill_match_details.get(skill, False))
+                preferred_matched = sum(1 for skill in preferred_skills if skill_match_details.get(skill, False))
+                
+                required_match_pct = (required_matched / len(required_skills) * 100) if required_skills else 100
+                preferred_match_pct = (preferred_matched / len(preferred_skills) * 100) if preferred_skills else 100
+                
+                print(f"  Required Skills: {required_matched}/{len(required_skills)} = {required_match_pct:.1f}%")
+                print(f"  Preferred Skills: {preferred_matched}/{len(preferred_skills)} = {preferred_match_pct:.1f}%")
+                
+                # Determine experience match
+                min_years = job.get("min_years_experience", 0) or 0
+                candidate_years = candidate.get("years_of_experience", 0) or 0
+                experience_match = candidate_years >= min_years
+                
+                print(f"  Experience: {candidate_years} years vs. required {min_years} = {experience_match}")
+                
+                # Determine location match
+                location_match = False
+                if job.get("remote_friendly") and candidate.get("remote_preference"):
+                    location_match = True
+                elif not job.get("location") or candidate.get("willing_to_relocate"):
+                    location_match = True
+                elif job.get("location") and candidate.get("current_location"):
+                    if job.get("location", "").lower() in candidate.get("current_location", "").lower() or \
+                    candidate.get("current_location", "").lower() in job.get("location", "").lower():
+                        location_match = True
+                
+                print(f"  Location Match: {location_match}")
+                
+                # Check if this is Thomas Kumar
+                is_thomas_kumar = "thomas" in candidate_name.lower() and "kumar" in candidate_name.lower()
+                if is_thomas_kumar:
+                    print(f"  ** Applying special consideration for Thomas Kumar **")
+                    # Boost his scores as needed
+                    required_match_pct = max(required_match_pct, 40)  # Ensure at least 40% match on required skills
+                
+                # Calculate overall match score (0-100)
+                match_score = (
+                    (required_match_pct * 0.5) +
+                    (preferred_match_pct * 0.2) +
+                    (100 if experience_match else 50) * 0.2 +
+                    (100 if location_match else 50) * 0.05 +
+                    (coord_match_data["cv_relevance"] * 100) * 0.05
+                )
+                
+                # Apply slight boost for Thomas Kumar if needed
+                if is_thomas_kumar and match_score < 40:
+                    match_score = 40  # Ensure Thomas meets minimum score threshold
+                
+                print(f"  Final Match Score: {match_score:.1f}")
+                
+                # Generate explanation
+                explanation = self._generate_match_explanation(
+                    job, 
+                    candidate,
+                    required_match_pct,
+                    preferred_match_pct,
+                    experience_match,
+                    location_match,
+                    skill_match_details
+                )
+                
+                # Create detailed result
+                result = {
+                    "candidate": candidate,
+                    "name": candidate.get("name", ""),
+                    "match_score": match_score,
+                    "required_skills_matched": f"{required_match_pct:.1f}%",
+                    "preferred_skills_matched": f"{preferred_match_pct:.1f}%",
+                    "skill_match_details": skill_match_details,
+                    "experience_match": "Yes" if experience_match else "No",
+                    "location_match": "Yes" if location_match else "No",
+                    "explanation": explanation
+                }
+                
+                ranked_results.append(result)
+            
+            # Sort by match score in descending order
+            ranked_results.sort(key=lambda x: x["match_score"], reverse=True)
+            
+            # Limit to top N results
+            top_results = ranked_results[:top_n]
+            
+            # Print final ranking
+            print("\nFinal Candidate Ranking:")
+            for i, result in enumerate(top_results, 1):
+                print(f"  {i}. {result['name']} - Score: {result['match_score']:.1f}")
+                print(f"     {result['explanation']}")
+            
+            return top_results
     
-    def _rank_candidates_with_detail(self, job: Dict[str, Any], filtered_candidates: List[Dict[str, Any]], top_n: int = 10) -> List[Dict[str, Any]]:
+    # Add these new methods to the AutoGenTalentMatcher class
+
+    def _research_role_requirements(self, job_title: str, important_qualities: str) -> Dict[str, Any]:
         """
-        Rank candidates based on comprehensive evaluation.
+        Research and analyze role requirements based on job title and important qualities.
         
         Args:
-            job: Dictionary representation of a JobRequirement
-            filtered_candidates: List of dictionaries with filtered candidates and match data
-            top_n: Maximum number of candidates to return
+            job_title: The title of the job
+            important_qualities: What's most important in a candidate (Column I)
             
         Returns:
-            List of dictionaries with ranked candidates and detailed match results
+            Dictionary containing role expertise information
         """
-        ranked_results = []
+        # Initialize requirements dictionary
+        expertise = {
+            "required_evidence": [],
+            "key_indicators": [],
+            "project_qualities": [],
+            "leadership_requirements": []
+        }
         
-        print(f"\nPerforming detailed ranking of {len(filtered_candidates)} candidates...")
+        # Analyze title for level and domain
+        title_lower = job_title.lower()
         
-        for item in filtered_candidates:
-            candidate = item["candidate"]
-            candidate_name = candidate.get("name", "Unknown")
-            coord_match_data = item["match_data"]
+        # Determine seniority level
+        is_senior = "senior" in title_lower or "lead" in title_lower
+        is_mid = "mid" in title_lower or not (is_senior or "junior" in title_lower)
+        
+        # Parse important qualities from Column I
+        if important_qualities:
+            qualities = [q.strip() for q in important_qualities.split(',')]
+            expertise["required_evidence"].extend(qualities)
+        
+        # Add level-specific requirements
+        if is_senior:
+            expertise["required_evidence"].extend([
+                "system architecture",
+                "team leadership",
+                "project management",
+                "mentoring",
+                "technical leadership"
+            ])
+            expertise["project_qualities"].extend([
+                "large scale",
+                "complex systems",
+                "cross-functional",
+                "high impact"
+            ])
+        elif is_mid:
+            expertise["required_evidence"].extend([
+                "project ownership",
+                "technical decision making",
+                "team collaboration"
+            ])
+            expertise["project_qualities"].extend([
+                "feature development",
+                "system improvements",
+                "technical implementation"
+            ])
+        
+        # Add domain-specific requirements
+        if "engineer" in title_lower or "developer" in title_lower:
+            expertise["key_indicators"].extend([
+                "code quality",
+                "system design",
+                "performance optimization",
+                "technical documentation",
+                "testing methodologies"
+            ])
+        elif "data" in title_lower:
+            expertise["key_indicators"].extend([
+                "data analysis",
+                "statistical modeling",
+                "data pipelines",
+                "machine learning",
+                "data visualization"
+            ])
+        
+        return expertise
+
+    def _analyze_cv_content(self, cv_content: str, role_expertise: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Analyze CV content against role expertise requirements.
+        
+        Args:
+            cv_content: The CV text content
+            role_expertise: Dictionary of role requirements
             
-            print(f"\nDetailed evaluation for candidate: {candidate_name}")
+        Returns:
+            Dictionary with analysis results
+        """
+        analysis = {
+            "evidence_found": [],
+            "evidence_scores": {},
+            "project_evaluation": [],
+            "leadership_indicators": [],
+            "overall_cv_score": 0.0
+        }
+        
+        if not cv_content:
+            return analysis
+        
+        cv_lower = cv_content.lower()
+        
+        # Look for evidence of required qualities
+        for evidence in role_expertise["required_evidence"]:
+            evidence_lower = evidence.lower()
+            # Use regex to find variations of the evidence
+            pattern = f"\\b{evidence_lower}\\w*\\b"
+            matches = re.findall(pattern, cv_lower)
             
-            # Perform detailed skill matching
-            skill_match_details = self._detailed_skill_matching(job, candidate)
+            # Look for evidence in context
+            sentences_with_evidence = re.findall(f"[^.]*{pattern}[^.]*\\.", cv_lower)
             
-            # Calculate skill match percentages
-            required_skills = {skill.get("name", "").lower() for skill in job.get("required_skills", [])}
-            preferred_skills = {skill.get("name", "").lower() for skill in job.get("preferred_skills", [])}
-            
-            required_matched = sum(1 for skill in required_skills if skill_match_details.get(skill, False))
-            preferred_matched = sum(1 for skill in preferred_skills if skill_match_details.get(skill, False))
-            
-            required_match_pct = (required_matched / len(required_skills) * 100) if required_skills else 100
-            preferred_match_pct = (preferred_matched / len(preferred_skills) * 100) if preferred_skills else 100
-            
-            print(f"  Required Skills: {required_matched}/{len(required_skills)} = {required_match_pct:.1f}%")
-            print(f"  Preferred Skills: {preferred_matched}/{len(preferred_skills)} = {preferred_match_pct:.1f}%")
-            
-            # Determine experience match
-            min_years = job.get("min_years_experience", 0) or 0
-            candidate_years = candidate.get("years_of_experience", 0) or 0
-            experience_match = candidate_years >= min_years
-            
-            print(f"  Experience: {candidate_years} years vs. required {min_years} = {experience_match}")
-            
-            # Determine location match
-            location_match = False
-            if job.get("remote_friendly") and candidate.get("remote_preference"):
-                location_match = True
-            elif not job.get("location") or candidate.get("willing_to_relocate"):
-                location_match = True
-            elif job.get("location") and candidate.get("current_location"):
-                if job.get("location", "").lower() in candidate.get("current_location", "").lower() or \
-                   candidate.get("current_location", "").lower() in job.get("location", "").lower():
-                    location_match = True
-            
-            print(f"  Location Match: {location_match}")
-            
-            # Check if this is Thomas Kumar
-            is_thomas_kumar = "thomas" in candidate_name.lower() and "kumar" in candidate_name.lower()
-            if is_thomas_kumar:
-                print(f"  ** Applying special consideration for Thomas Kumar **")
-                # Boost his scores as needed
-                required_match_pct = max(required_match_pct, 40)  # Ensure at least 40% match on required skills
-            
-            # Calculate overall match score (0-100)
-            match_score = (
-                (required_match_pct * 0.5) +
-                (preferred_match_pct * 0.2) +
-                (100 if experience_match else 50) * 0.2 +
-                (100 if location_match else 50) * 0.05 +
-                (coord_match_data["cv_relevance"] * 100) * 0.05
-            )
-            
-            # Apply slight boost for Thomas Kumar if needed
-            if is_thomas_kumar and match_score < 40:
-                match_score = 40  # Ensure Thomas meets minimum score threshold
-            
-            print(f"  Final Match Score: {match_score:.1f}")
-            
-            # Generate explanation
-            explanation = self._generate_match_explanation(
-                job, 
-                candidate,
-                required_match_pct,
-                preferred_match_pct,
-                experience_match,
-                location_match,
-                skill_match_details
-            )
-            
-            # Create detailed result
-            result = {
-                "candidate": candidate,
-                "name": candidate.get("name", ""),
-                "match_score": match_score,
-                "required_skills_matched": f"{required_match_pct:.1f}%",
-                "preferred_skills_matched": f"{preferred_match_pct:.1f}%",
-                "skill_match_details": skill_match_details,
-                "experience_match": "Yes" if experience_match else "No",
-                "location_match": "Yes" if location_match else "No",
-                "explanation": explanation
+            if matches or sentences_with_evidence:
+                analysis["evidence_found"].append(evidence)
+                # Score based on frequency and context
+                base_score = len(matches) * 0.2  # Base score per mention
+                context_score = len(sentences_with_evidence) * 0.3  # Additional score for contextual mentions
+                analysis["evidence_scores"][evidence] = min(1.0, base_score + context_score)
+        
+        # Analyze projects section
+        project_sections = re.split(r'projects?:|work\s+experience:|experience:', cv_lower)[1:]
+        
+        for section in project_sections:
+            project_score = {
+                "indicators_found": [],
+                "quality_indicators": [],
+                "relevance_score": 0.0
             }
             
-            ranked_results.append(result)
+            # Look for key technical indicators
+            for indicator in role_expertise["key_indicators"]:
+                if indicator.lower() in section:
+                    project_score["indicators_found"].append(indicator)
+            
+            # Look for project quality indicators
+            for quality in role_expertise["project_qualities"]:
+                if quality.lower() in section:
+                    project_score["quality_indicators"].append(quality)
+            
+            # Calculate project relevance score
+            if project_score["indicators_found"] or project_score["quality_indicators"]:
+                indicator_score = len(project_score["indicators_found"]) / len(role_expertise["key_indicators"])
+                quality_score = len(project_score["quality_indicators"]) / len(role_expertise["project_qualities"])
+                project_score["relevance_score"] = (indicator_score * 0.6) + (quality_score * 0.4)
+                analysis["project_evaluation"].append(project_score)
         
-        # Sort by match score in descending order
-        ranked_results.sort(key=lambda x: x["match_score"], reverse=True)
+        # Calculate overall CV score
+        if analysis["evidence_scores"]:
+            evidence_score = sum(analysis["evidence_scores"].values()) / len(role_expertise["required_evidence"])
+            project_score = max([p["relevance_score"] for p in analysis["project_evaluation"]], default=0)
+            analysis["overall_cv_score"] = (evidence_score * 0.6) + (project_score * 0.4)
         
-        # Limit to top N results
-        top_results = ranked_results[:top_n]
+        return analysis
+
+    def _evaluate_candidate_cv(self, candidate: Dict[str, Any], role_expertise: Dict[str, Any]) -> float:
+        """
+        Evaluate a candidate's CV content against role requirements.
         
-        # Print final ranking
-        print("\nFinal Candidate Ranking:")
-        for i, result in enumerate(top_results, 1):
-            print(f"  {i}. {result['name']} - Score: {result['match_score']:.1f}")
-            print(f"     {result['explanation']}")
+        Args:
+            candidate: Dictionary containing candidate information
+            role_expertise: Dictionary containing role requirements
+            
+        Returns:
+            Float score between 0 and 1 representing CV match
+        """
+        cv_content = candidate.get("cv_content", "")
+        if not cv_content:
+            return 0.1  # Base score for no CV
         
-        return top_results
-    
+        # Get detailed CV analysis
+        cv_analysis = self._analyze_cv_content(cv_content, role_expertise)
+        
+        # Store analysis in candidate object for later use
+        candidate["cv_analysis"] = cv_analysis
+        
+        return cv_analysis["overall_cv_score"]
+
     def _evaluate_candidates_for_job(self, job: Dict[str, Any], candidates: List[Dict[str, Any]], 
                                   top_n: int = 10, min_threshold: float = 0.3) -> Dict[str, Any]:
         """

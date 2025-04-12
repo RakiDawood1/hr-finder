@@ -5,7 +5,7 @@ This module defines structured data models for job requirements and candidate pr
 ensuring consistent data validation and standardization throughout the application.
 """
 
-from typing import List, Dict, Optional, Set, Union
+from typing import List, Dict, Optional, Set, Union, Any
 from pydantic import BaseModel, Field, validator
 from enum import Enum
 from datetime import date
@@ -65,22 +65,27 @@ class JobRequirement(BaseModel):
     description: Optional[str] = None
     responsibilities: List[str] = []
     qualifications: List[str] = []
-    salary_range: Optional[Dict[str, float]] = None  # {"min": 50000, "max": 70000}
+    salary_range: Optional[Dict[str, float]] = None
+    important_qualities: Optional[str] = None  # Added for Column I content
     
     class Config:
         validate_assignment = True
     
     def get_all_skills(self) -> Set[str]:
-        """
-        Get all unique skills (both required and preferred) for this job.
-        
-        Returns:
-            A set of all unique skill names.
-        """
+        """Get all unique skills (both required and preferred) for this job."""
         all_skills = set()
         all_skills.update([skill.name for skill in self.required_skills])
         all_skills.update([skill.name for skill in self.preferred_skills])
         return all_skills
+
+
+class CVAnalysis(BaseModel):
+    """Model for CV content analysis results."""
+    evidence_found: List[str] = []
+    evidence_scores: Dict[str, float] = {}
+    project_evaluation: List[Dict[str, Any]] = []
+    leadership_indicators: List[str] = []
+    overall_cv_score: float = 0.0
 
 
 class CandidateProfile(BaseModel):
@@ -120,13 +125,14 @@ class MatchResult(BaseModel):
     """Model for representing a job-candidate match result."""
     job: JobRequirement
     candidate: CandidateProfile
-    match_score: float = Field(..., ge=0, le=100)  # 0-100 scale
-    skill_match_details: Dict[str, bool] = {}  # {"python": True, "docker": False}
+    match_score: float = Field(..., ge=0, le=100)
+    skill_match_details: Dict[str, bool] = {}
     required_skill_match_percentage: float = Field(..., ge=0, le=100)
     preferred_skill_match_percentage: float = Field(..., ge=0, le=100)
     education_match: bool = False
     experience_match: bool = False
     location_match: bool = False
+    cv_analysis: Optional[CVAnalysis] = None  # Added for enhanced CV analysis
     match_explanation: Optional[str] = None
     
     class Config:
