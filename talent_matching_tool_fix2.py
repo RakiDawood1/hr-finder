@@ -59,11 +59,60 @@ class TalentMatchingTool:
         self.jobs_range = os.getenv('JOBS_RANGE', 'Sheet1!A:Z')
         self.talents_range = os.getenv('TALENTS_RANGE', 'Sheet1!A:Z')
         
-        # Column index for CV links in talents sheet
-        self.cv_column_index = int(os.getenv('CV_COLUMN_INDEX', '14'))
+        # Set CV column index (column N = 13)
+        self.cv_column_index = int(os.getenv('CV_COLUMN_INDEX', '13'))
+        
+        # Validate and adjust CV column index
+        self._validate_cv_column()
         
         # Cache for column indices 
         self._talents_col_indices = None
+        
+    def _validate_cv_column(self):
+        """Validate and adjust CV column index if necessary."""
+        try:
+            # Get sheet headers
+            result = self.sheets_service.spreadsheets().values().get(
+                spreadsheetId=self.talents_sheet_id,
+                range=f"{self.talents_range.split('!')[0]}!1:1"  # Get first row only
+            ).execute()
+            
+            headers = result.get('values', [[]])[0]
+            print("\nValidating CV column configuration:")
+            print(f"Total columns found: {len(headers)}")
+            print(f"Current CV column index: {self.cv_column_index}")
+            
+            # Look for CV column
+            cv_column = None
+            for i, header in enumerate(headers):
+                if header.lower() == 'cv':
+                    cv_column = i
+                    break
+            
+            if cv_column is not None:
+                print(f"Found CV column at index {cv_column}")
+                if cv_column != self.cv_column_index:
+                    print(f"Adjusting CV column index from {self.cv_column_index} to {cv_column}")
+                    self.cv_column_index = cv_column
+            else:
+                # If no CV column found, try to find similar column names
+                cv_like_columns = [(i, h) for i, h in enumerate(headers) 
+                                 if 'cv' in h.lower() or 'resume' in h.lower()]
+                if cv_like_columns:
+                    print(f"CV column not found, but found similar columns:")
+                    for i, h in cv_like_columns:
+                        print(f"  Column {i}: {h}")
+                else:
+                    print("Warning: No CV column found in headers")
+            
+            # Print column mapping for verification
+            print("\nColumn mapping:")
+            for i, header in enumerate(headers):
+                print(f"Column {i} ({chr(65+i)}): {header}")
+                
+        except Exception as e:
+            print(f"Error validating CV column: {e}")
+            print("Using default CV column index")
         
     def _get_talents_column_indices(self):
         """Get important column indices for the talents sheet to avoid hard-coding."""
@@ -254,34 +303,59 @@ class TalentMatchingTool:
         if not drive_link:
             return ""
             
-        # Clean the link by removing any line breaks and extra spaces
+        # Clean the link
         drive_link = drive_link.strip().replace('\n', '').replace(' ', '')
-            
-        # Pattern for various Google Drive link formats
+        print(f"\nExtracting file ID from link: {drive_link}")
+        
+        # Define patterns - order matters!
         patterns = [
-            r"https://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)",  # /file/d/ format
-            r"https://docs\.google\.com/document/d/([a-zA-Z0-9_-]+)(?:\?|$)",  # Google Docs with optional params
-            r"https://docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)(?:\?|$)",  # Google Sheets with optional params
-            r"https://docs\.google\.com/presentation/d/([a-zA-Z0-9_-]+)(?:\?|$)",  # Google Slides with optional params
-            r"https://drive\.google\.com/drive/folders/([a-zA-Z0-9_-]+)",  # Folders
-            r"id=([a-zA-Z0-9_-]+)",  # Generic id= parameter
-            r"https://drive\.google\.com/uc\?export=download&id=([a-zA-Z0-9_-]+)"  # Direct download link
+            # Pattern for Google Docs with parameters
+            r"https://docs\.google\.com/document/d/([a-zA-Z0-9_-]+)/edit",
+            
+            # Pattern for /file/d/ format
+            r"https://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)",
+            
+            # Pattern for direct document links
+            r"https://docs\.google\.com/document/d/([a-zA-Z0-9_-]+)",
+            
+            # Pattern for spreadsheets
+            r"https://docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)",
+            
+            # Pattern for presentations
+            r"https://docs\.google\.com/presentation/d/([a-zA-Z0-9_-]+)",
+            
+            # Pattern for folders
+            r"https://drive\.google\.com/drive/folders/([a-zA-Z0-9_-]+)",
+            
+            # Pattern for direct download links
+            r"https://drive\.google\.com/uc\?export=download&id=([a-zA-Z0-9_-]+)"
         ]
         
         for pattern in patterns:
             match = re.search(pattern, drive_link)
             if match:
-                return match.group(1)
-                
-        # If no patterns match but link contains a long alphanumeric string, attempt to extract it
-        # Look for a string of 25+ alphanumeric characters that appears before any query parameters
-        alphanumeric_pattern = r"([a-zA-Z0-9_-]{25,})(?:\?|$)"
-        match = re.search(alphanumeric_pattern, drive_link)
-        if match:
-            return match.group(1)
-            
+                file_id = match.group(1)
+                # File IDs are typically 33 characters - validate length
+                if 25 <= len(file_id) <= 50:  # Being a bit flexible with length
+                    print(f"Extracted file ID: {file_id}")
+                    return file_id.split('?')[0]  # Remove any trailing parameters
+        
+        print(f"Warning: Could not extract file ID using standard patterns")
         return ""
-    
+
+    def _validate_file_id(self, file_id: str) -> bool:
+        """Validate if a file ID is likely to be correct."""
+        if not file_id:
+            return False
+            
+        # Basic validation for Google Drive file IDs
+        # - Typically 33 characters
+        # - Contains letters, numbers, underscores, and hyphens
+        # - No special characters
+        if 25 <= len(file_id) <= 50 and re.match(r'^[a-zA-Z0-9_-]+$', file_id):
+            return True
+        return False
+
     def extract_cv_content(self, drive_link: str) -> str:
         """
         Download and extract text content from a CV file.
@@ -299,99 +373,86 @@ class TalentMatchingTool:
         try:
             # Extract file ID from the drive link
             file_id = self.extract_file_id_from_drive_link(drive_link)
-            if not file_id:
-                print(f"Warning: Could not extract file ID from link: {drive_link}")
+            if not file_id or not self._validate_file_id(file_id):
+                print(f"Warning: Invalid or no file ID extracted from link: {drive_link}")
                 return ""
-            print(f"Successfully extracted file ID: {file_id}")
                 
-            # Get file metadata to determine type
+            print(f"Processing file ID: {file_id}")
+                
+            # Get file metadata
             try:
-                print("Attempting to get file metadata...")
+                print("Getting file metadata...")
                 file_metadata = self.drive_service.files().get(
                     fileId=file_id,
                     fields='mimeType,name'
                 ).execute()
+                
                 mime_type = file_metadata.get('mimeType', '')
                 file_name = file_metadata.get('name', '')
-                print(f"File metadata - Name: {file_name}, MIME Type: {mime_type}")
-            except Exception as e:
-                print(f"Warning: Could not get file metadata: {str(e)}")
-                return ""
+                print(f"File: {file_name} ({mime_type})")
                 
-            # Download file content
-            try:
-                if 'pdf' in mime_type.lower():
-                    print("Processing PDF file...")
-                    print("Attempting to download PDF content...")
-                    request = self.drive_service.files().get_media(fileId=file_id)
-                    content = request.execute()
-                    print(f"Downloaded PDF content length: {len(content)} bytes")
-                    
-                    # Save PDF temporarily
-                    temp_pdf = f"temp_{file_id}.pdf"
-                    print(f"Saving PDF to temporary file: {temp_pdf}")
-                    with open(temp_pdf, 'wb') as f:
-                        f.write(content)
+            except Exception as e:
+                print(f"Error getting file metadata: {str(e)}")
+                return ""
+            
+            text = ""
+            # Handle different file types
+            if 'document' in mime_type:
+                print("Exporting Google Doc as text...")
+                request = self.drive_service.files().export_media(
+                    fileId=file_id,
+                    mimeType='text/plain'
+                )
+                content = request.execute()
+                text = content.decode('utf-8')
+                
+            elif 'pdf' in mime_type:
+                print("Downloading PDF content...")
+                request = self.drive_service.files().get_media(fileId=file_id)
+                content = request.execute()
+                
+                with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
+                    temp_pdf.write(content)
+                    temp_pdf_path = temp_pdf.name
+                
+                try:
+                    import pdfplumber
+                    with pdfplumber.open(temp_pdf_path) as pdf:
+                        text_parts = []
+                        for page in pdf.pages:
+                            text_parts.append(page.extract_text() or '')
+                        text = '\n\n'.join(text_parts)
+                finally:
+                    if os.path.exists(temp_pdf_path):
+                        os.unlink(temp_pdf_path)
                         
-                    # Extract text from PDF using pdfplumber
-                    try:
-                        import pdfplumber
-                        print("Opening PDF with pdfplumber...")
-                        with pdfplumber.open(temp_pdf) as pdf:
-                            text = ""
-                            print(f"PDF has {len(pdf.pages)} pages")
-                            for i, page in enumerate(pdf.pages, 1):
-                                print(f"Processing page {i}...")
-                                page_text = page.extract_text()
-                                if page_text:  # Only add if we got text
-                                    text += page_text + "\n"
-                                    print(f"Extracted {len(page_text)} characters from page {i}")
-                                else:
-                                    print(f"Warning: No text extracted from page {i}, trying alternative method")
-                                    page_text = page.extract_text(x_tolerance=3, y_tolerance=3)
-                                    if page_text:
-                                        text += page_text + "\n"
-                                        print(f"Extracted {len(page_text)} characters from page {i} using alternative method")
-                            if not text.strip():  # If no text was extracted
-                                print("Warning: No text extracted from any page")
-                            else:
-                                print(f"Total extracted text length: {len(text)} characters")
-                    except Exception as e:
-                        print(f"Error during PDF text extraction: {str(e)}")
-                        raise
-                    finally:
-                        # Clean up temp file
-                        if os.path.exists(temp_pdf):
-                            print(f"Cleaning up temporary file: {temp_pdf}")
-                            os.remove(temp_pdf)
-                            
-                elif 'word' in mime_type.lower() or file_name.lower().endswith(('.doc', '.docx')):
-                    print("Processing Word document...")
-                    print("Attempting to export Word document as text...")
+            else:
+                print(f"Attempting text extraction from {mime_type}...")
+                try:
                     request = self.drive_service.files().export_media(
                         fileId=file_id,
                         mimeType='text/plain'
                     )
                     content = request.execute()
                     text = content.decode('utf-8')
-                    print(f"Extracted text length: {len(text)} characters")
-                    
-                else:
-                    print(f"Warning: Unsupported file type: {mime_type}")
-                    return ""
-                    
-            except Exception as e:
-                print(f"Warning: Error downloading or processing file: {str(e)}")
+                except Exception:
+                    request = self.drive_service.files().get_media(fileId=file_id)
+                    content = request.execute()
+                    text = content.decode('utf-8', errors='ignore')
+            
+            # Clean and validate the extracted text
+            if text:
+                text = text.strip()
+                print(f"Successfully extracted {len(text)} characters")
+                return text
+            else:
+                print("Warning: No text content extracted")
                 return ""
                 
-            # Clean and validate content
-            text = text.strip()
-            if not text:
-                print("Warning: No text content extracted after cleaning")
-            return text
-            
         except Exception as e:
             print(f"Error extracting CV content: {str(e)}")
+            import traceback
+            print(f"Stack trace: {traceback.format_exc()}")
             return ""
     
     def get_cv_content(self, cv_link: str) -> str:
@@ -435,20 +496,93 @@ class TalentMatchingTool:
         # Convert row to dictionary
         talent_dict = talent_row.iloc[0].to_dict()
         
+        # Debug info
+        print("\nDEBUG: Talent CV Data")
+        print("-" * 50)
+        print(f"Row number: {row_number}")
+        
         # Get CV content if link exists
         cv_link = ""
-        cv_column_name = talents_df.columns[self.cv_column_index] if self.cv_column_index < len(talents_df.columns) else None
+        cv_column_name = None
+        
+        # Print column names and indices for debugging
+        print("\nColumn Index Check:")
+        for i, col in enumerate(talents_df.columns):
+            print(f"Column {i}: {col}")
+        
+        cv_column_idx = self.cv_column_index
+        print(f"\nCV Column Index: {cv_column_idx}")
+        
+        if cv_column_idx < len(talents_df.columns):
+            cv_column_name = talents_df.columns[cv_column_idx]
+            print(f"CV Column Name: {cv_column_name}")
+        else:
+            print("Warning: CV column index out of range")
         
         if cv_column_name and cv_column_name in talent_dict:
             cv_link = talent_dict[cv_column_name]
-            print(f"Found CV link for {talent_dict.get('name', 'Unknown')}: {cv_link}")
+            print(f"\nCV Link for {talent_dict.get('name', 'Unknown')}: {cv_link}")
         else:
-            print(f"Warning: No CV column found or CV link missing for {talent_dict.get('name', 'Unknown')}")
+            print(f"\nWarning: No CV column found or CV link missing")
             
-        cv_content = self.get_cv_content(cv_link) if cv_link else "No CV link provided."
-        print(f"CV content length for {talent_dict.get('name', 'Unknown')}: {len(cv_content)} characters")
+        cv_content = ""
+        if cv_link:
+            print("\nAttempting to extract CV content...")
+            cv_content = self.extract_cv_content(cv_link)
+            print(f"Extracted CV content length: {len(cv_content)}")
+            print("First 100 characters of CV content:")
+            print("-" * 50)
+            print(cv_content[:100])
+            print("-" * 50)
+        else:
+            cv_content = "No CV link provided."
+            print("No CV link to process")
         
         return talent_dict, cv_content
+
+    def process_all_talents_with_cvs(self) -> List[Tuple[Dict[str, Any], str]]:
+        """
+        Process all talents and their CVs.
+        
+        Returns:
+            A list of tuples, each containing talent details and CV content
+        """
+        talents_df = self.get_all_talents()
+        results = []
+        
+        print("\nDEBUG: Processing all talents")
+        print("-" * 50)
+        
+        # Get CV column name
+        cv_column_name = talents_df.columns[self.cv_column_index] if self.cv_column_index < len(talents_df.columns) else None
+        
+        if not cv_column_name:
+            print(f"Warning: CV column index {self.cv_column_index} is out of range")
+            print(f"Available columns: {list(talents_df.columns)}")
+            return []
+        
+        print(f"Using CV column: {cv_column_name}")
+        
+        # Process each talent
+        for index, row in talents_df.iterrows():
+            talent_dict = row.to_dict()
+            talent_name = talent_dict.get('Name', 'Unknown')
+            cv_link = row.get(cv_column_name, "")
+            
+            print(f"\nProcessing {talent_name}:")
+            print(f"CV Link: {cv_link}")
+            
+            if cv_link:
+                print("Extracting CV content...")
+                cv_content = self.extract_cv_content(cv_link)
+                print(f"Extracted content length: {len(cv_content)}")
+            else:
+                cv_content = "No CV link provided."
+                print("No CV link to process")
+                
+            results.append((talent_dict, cv_content))
+            
+        return results
     
     def _enhance_talent_from_sheet(self, talent_dict: Dict[str, Any], row_data: List, headers: List) -> Dict[str, Any]:
         """
@@ -595,7 +729,7 @@ class TalentMatchingTool:
         Returns:
             A list of validated CandidateProfile models
         """
-        # Get the talents data for enhanced parsing
+        # Get the raw sheet data for enhanced parsing
         result = self.sheets_service.spreadsheets().values().get(
             spreadsheetId=self.talents_sheet_id,
             range=self.talents_range
@@ -603,6 +737,11 @@ class TalentMatchingTool:
         
         values = result.get('values', [])
         headers = values[0] if values else []
+        
+        print("\nDEBUG: Processing talent models")
+        print("-" * 50)
+        print(f"Found {len(values)-1} candidates in sheet")
+        print(f"CV column index: {self.cv_column_index}")
         
         # Process all talents with enhanced approach
         talent_models = []
@@ -621,10 +760,26 @@ class TalentMatchingTool:
                 row_number = i + 1  # +1 because we skipped header and i is 0-based
                 talent_dict["row_number"] = row_number
                 
-                # Get CV content
-                cv_col_idx = self.cv_column_index
-                cv_link = row_data[cv_col_idx] if cv_col_idx < len(row_data) else ""
-                cv_content = self.get_cv_content(cv_link) if cv_link else "No CV link provided."
+                # Get CV link and content
+                cv_link = row_data[self.cv_column_index] if self.cv_column_index < len(row_data) else ""
+                
+                print(f"\nProcessing candidate {row_number}:")
+                print(f"Name: {talent_dict.get('Name', 'Unknown')}")
+                print(f"CV Link: {cv_link}")
+                
+                if cv_link:
+                    print("Extracting CV content...")
+                    cv_content = self.extract_cv_content(cv_link)
+                    print(f"Extracted CV content length: {len(cv_content)}")
+                    # Debug first part of content
+                    if cv_content:
+                        print("First 100 characters of CV:")
+                        print("-" * 30)
+                        print(cv_content[:100])
+                        print("-" * 30)
+                else:
+                    cv_content = "No CV link provided."
+                    print("No CV link available")
                 
                 # Enhance the talent data using raw sheet data
                 talent_dict = self._enhance_talent_from_sheet(talent_dict, row_data, headers)
@@ -632,37 +787,31 @@ class TalentMatchingTool:
                 # Parse to model
                 model = parse_candidate_to_model(talent_dict, cv_content)
                 
-                # Double-check the years_of_experience
+                # Double-check the model CV content
+                model_cv_len = len(model.cv_content) if model.cv_content else 0
+                print(f"Model CV content length: {model_cv_len}")
+                
+                # Double-check years of experience
                 if model.years_of_experience is None or model.years_of_experience == 0:
                     years_exp = talent_dict.get("YearsExperience") or talent_dict.get("years_of_experience")
                     if years_exp:
                         model.years_of_experience = float(years_exp)
                         print(f"Fixed years of experience for {model.name}: {model.years_of_experience}")
                 
-                # Set job preference field if missing
-                if not hasattr(model, 'jobs_applying_for') or not model.jobs_applying_for:
-                    col_indices = self._get_talents_column_indices()
-                    job_pref_col_idx = col_indices['job_preference']
-                    if len(row_data) > job_pref_col_idx:
-                        job_pref_value = row_data[job_pref_col_idx]
-                        if job_pref_value:
-                            setattr(model, 'jobs_applying_for', job_pref_value)
-                
                 talent_models.append(model)
+                
             except Exception as e:
-                print(f"Error parsing candidate at row {i+1} to model: {e}")
-                # Continue processing other candidates even if one fails
+                print(f"Error processing candidate at row {i+1}: {str(e)}")
+                import traceback
+                print(f"Stack trace: {traceback.format_exc()}")
                 continue
-                
-        # Add a debugging step to ensure candidates are correctly processed
-        print(f"\nProcessed {len(talent_models)} candidates:")
+        
+        # Final check of models
+        print(f"\nProcessed {len(talent_models)} candidates successfully")
         for model in talent_models:
-            job_preference = getattr(model, 'jobs_applying_for', None) or getattr(model, 'position_preference', None) or 'Unknown'
-            print(f"  - {model.name}: {model.years_of_experience} years experience, " +
-                 f"Job Preference: '{job_preference}', " +
-                 f"Skills: {', '.join([s.name for s in model.skills[:3]])}" +
-                 (", ..." if len(model.skills) > 3 else ""))
-                
+            cv_len = len(model.cv_content) if model.cv_content else 0
+            print(f"  - {model.name}: CV length = {cv_len} chars")
+        
         return talent_models
 
 def main():

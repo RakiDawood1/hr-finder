@@ -42,7 +42,7 @@ class AutoGenTalentMatcher:
     Talent Matching framework using Microsoft's AutoGen for function execution.
     """
     
-    def __init__(self, config_list=None, verbose=True, use_gemini=False):
+    def __init__(self, config_list=None, verbose=True, use_gemini=False, debug=False):
         """
         Initialize the AutoGen-based Talent Matcher.
         
@@ -50,11 +50,17 @@ class AutoGenTalentMatcher:
             config_list: Configuration for the LLM (if None, agents will use function calling only)
             verbose: Whether to display detailed agent conversations
             use_gemini: Whether to use Gemini API (requires GEMINI_API_KEY in environment)
+            debug: Enable debug logging for detailed troubleshooting
         """
         self.verbose = verbose
         self.config_list = config_list
         self.use_gemini = use_gemini
+        self.debug = debug
         self.tfidf_vectorizer = TfidfVectorizer(stop_words='english')
+        
+        # Set up logging based on debug flag
+        log_level = logging.DEBUG if debug else logging.INFO
+        logging.getLogger("talent_matching_autogen").setLevel(log_level)
         
         # Define related job titles mapping
         self.related_job_titles = {
@@ -80,7 +86,10 @@ class AutoGenTalentMatcher:
         # Initialize function caller
         self._setup_function_caller()
         
-        logger.info("AutoGen Talent Matcher initialized")
+        if self.debug:
+            logger.debug("AutoGen Talent Matcher initialized with debug mode")
+        else:
+            logger.info("AutoGen Talent Matcher initialized")
     
     def _setup_function_caller(self):
         """Set up the function-based matching pipeline."""
@@ -616,11 +625,25 @@ class AutoGenTalentMatcher:
     def _evaluate_candidate_cv(self, candidate: Dict[str, Any], role_expertise: Dict[str, Any]) -> float:
         """Evaluate a candidate's CV content against role requirements."""
         cv_content = candidate.get("cv_content", "")
+        
+        if self.debug:
+            logger.debug(f"\nEvaluating CV for {candidate.get('name', 'Unknown')}")
+            logger.debug(f"CV content length: {len(cv_content)}")
+            if cv_content:
+                logger.debug("First 100 chars of CV:")
+                logger.debug(cv_content[:100])
+        
         if not cv_content:
+            logger.debug("No CV content available") if self.debug else None
             return 0.1
         
         cv_analysis = self._analyze_cv_content(cv_content, role_expertise)
         candidate["cv_analysis"] = cv_analysis
+        
+        if self.debug:
+            logger.debug(f"CV Analysis Results:")
+            logger.debug(f"Evidence found: {cv_analysis.get('evidence_found', [])}")
+            logger.debug(f"Overall score: {cv_analysis.get('overall_cv_score', 0)}")
         
         return cv_analysis["overall_cv_score"]
     

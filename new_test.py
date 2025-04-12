@@ -9,6 +9,7 @@ import sys
 from dotenv import load_dotenv
 from talent_matching_tool_fix2 import TalentMatchingTool
 from autogen_matching_engine_fix2 import AutoGenMatchingEngine
+import logging
 
 def test_matching_for_job(job_row):
     """Test the matching process for a specific job row."""
@@ -23,9 +24,12 @@ def test_matching_for_job(job_row):
         print(f"Error: Credentials file not found at {credentials_path}")
         return False
     
-    # Create instances
+    # Enable debug logging
+    logging.getLogger().setLevel(logging.DEBUG)
+    
+    # Create instances with debug mode
     tool = TalentMatchingTool(credentials_path)
-    engine = AutoGenMatchingEngine(tool, verbose=True)
+    engine = AutoGenMatchingEngine(tool, verbose=True, debug=True)
     
     # First, check if the job model now has skills
     job_model = tool.get_job_model(job_row)
@@ -51,7 +55,7 @@ def test_matching_for_job(job_row):
     else:
         print("  No preferred skills defined (this may be OK)")
     
-    # Now run the matching
+    # Now run the matching with debug output
     print("\nRunning matching process...")
     result = engine.match_job_to_candidates(
         job_row=job_row,

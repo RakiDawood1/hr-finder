@@ -40,7 +40,7 @@ class AutoGenMatchingEngine:
     a multi-step evaluation process with detailed output.
     """
     
-    def __init__(self, tool: TalentMatchingTool, config_list=None, verbose=True, use_gemini=False):
+    def __init__(self, tool: TalentMatchingTool, config_list=None, verbose=True, use_gemini=False, debug=False):
         """
         Initialize the matching engine.
         
@@ -49,13 +49,26 @@ class AutoGenMatchingEngine:
             config_list: Configuration for the LLM (if None, agents will use function calling only)
             verbose: Whether to display detailed matching process
             use_gemini: Whether to use Gemini API (requires GEMINI_API_KEY in environment)
+            debug: Enable debug logging for detailed troubleshooting
         """
         self.tool = tool
         self.verbose = verbose
-        self.matcher = AutoGenTalentMatcher(config_list=config_list, verbose=verbose, use_gemini=use_gemini)
+        self.debug = debug
+        self.matcher = AutoGenTalentMatcher(
+            config_list=config_list, 
+            verbose=verbose, 
+            use_gemini=use_gemini,
+            debug=debug
+        )
         
-        # Log which mode we're using
+        # Set up logging based on debug flag
+        log_level = logging.DEBUG if debug else logging.INFO
+        logging.getLogger("autogen_matching_engine").setLevel(log_level)
+        
+        # Log initialization
         logger.info("AutoGen Matching Engine initialized with enhanced matching process")
+        if debug:
+            logger.debug("Debug mode enabled - detailed logging will be shown")
     
     def match_job_to_candidates(
         self,
@@ -86,6 +99,13 @@ class AutoGenMatchingEngine:
                 "job_row": job_row
             }
         
+        if self.debug:
+            logger.debug(f"Job Model details:")
+            logger.debug(f"Title: {job_model.title}")
+            logger.debug(f"Required Skills: {[s.name for s in job_model.required_skills]}")
+            logger.debug(f"Experience Level: {job_model.experience_level}")
+            logger.debug(f"Min Years Experience: {job_model.min_years_experience}")
+        
         logger.info(f"Retrieved job: {job_model.title}")
         
         # Step 2: Retrieve all candidate profiles as validated models
@@ -97,6 +117,14 @@ class AutoGenMatchingEngine:
                 "job_row": job_row,
                 "job_title": job_model.title
             }
+        
+        if self.debug:
+            logger.debug(f"\nCandidate details:")
+            for candidate in all_candidates:
+                logger.debug(f"\nCandidate: {candidate.name}")
+                logger.debug(f"Skills: {[s.name for s in candidate.skills]}")
+                logger.debug(f"Years Experience: {candidate.years_of_experience}")
+                logger.debug(f"CV Content Length: {len(candidate.cv_content) if candidate.cv_content else 0}")
         
         logger.info(f"Retrieved {len(all_candidates)} candidate profiles")
         
@@ -146,6 +174,14 @@ class AutoGenMatchingEngine:
             "matches": matched_candidates_with_rows,
             "match_details": match_results
         }
+        
+        if self.debug:
+            logger.debug("\nFinal Match Results:")
+            for match in match_results:
+                logger.debug(f"\nCandidate: {match.get('name', '')}")
+                logger.debug(f"Match Score: {match.get('match_score', 0):.1f}")
+                logger.debug(f"Required Skills Matched: {match.get('required_skills_matched', '')}")
+                logger.debug(f"Experience Match: {match.get('experience_match', '')}")
         
         logger.info(f"Completed matching process. Found {len(match_results)} suitable candidates in {execution_time:.2f} seconds")
         return result
