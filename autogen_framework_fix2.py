@@ -83,7 +83,7 @@ class AutoGenTalentMatcher:
         logger.info("AutoGen Talent Matcher initialized")
     
     def _setup_function_caller(self):
-        """Set up the function caller framework."""
+        """Set up the function-based matching pipeline."""
         logger.info("Setting up function-based matching pipeline")
         
         self.function_caller = autogen.UserProxyAgent(
@@ -274,61 +274,345 @@ class AutoGenTalentMatcher:
         return expertise
 
     def _analyze_cv_content(self, cv_content: str, role_expertise: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze CV content against role expertise requirements."""
-        analysis = {
-            "evidence_found": [],
-            "evidence_scores": {},
-            "project_evaluation": [],
-            "leadership_indicators": [],
-            "overall_cv_score": 0.0
+        """Analyze CV content against role expertise requirements using intelligent context analysis."""
+        if not cv_content or not cv_content.strip():
+            print("Warning: Empty CV content provided")
+            return {
+                "evidence_found": [],
+                "evidence_scores": {},
+                "project_evaluation": [],
+                "leadership_indicators": [],
+                "skill_mentions": {},
+                "experience_context": {},
+                "overall_cv_score": 0.0
+            }
+        
+        print(f"\nAnalyzing CV content ({len(cv_content)} characters)...")
+        
+        # Preprocess and section the CV
+        sections = self._extract_cv_sections(cv_content)
+        
+        if not sections:
+            print("Warning: No sections could be extracted from CV content")
+            # Try to analyze the entire content as a single section
+            evidence_results = self._evaluate_evidence_in_context(
+                cv_content, 
+                {"experience": cv_content},  # Use entire content as experience
+                role_expertise["required_evidence"],
+                []  # No inferred skills
+            )
+            return {
+                "evidence_found": evidence_results["evidence_found"],
+                "evidence_scores": evidence_results["evidence_scores"],
+                "project_evaluation": [],
+                "inferred_skills": [],
+                "overall_cv_score": evidence_results["overall_score"]
+            }
+        
+        # Extract skills inferred from education
+        education_section = sections.get("education", "")
+        inferred_domain_knowledge = self._infer_domain_knowledge_from_education(education_section)
+        print(f"Inferred {len(inferred_domain_knowledge)} skills from education section")
+        
+        # Extract skills inferred from work experience
+        experience_section = sections.get("experience", "")
+        inferred_skills_from_experience = self._infer_skills_from_experience(experience_section)
+        print(f"Inferred {len(inferred_skills_from_experience)} skills from experience section")
+        
+        # Combine all inferred skills
+        inferred_skills = inferred_domain_knowledge + inferred_skills_from_experience
+        print(f"Total inferred skills: {len(inferred_skills)}")
+        
+        # Evaluate required evidence in context of all CV sections
+        evidence_results = self._evaluate_evidence_in_context(
+            cv_content, 
+            sections, 
+            role_expertise["required_evidence"],
+            inferred_skills
+        )
+        
+        # Return comprehensive analysis
+        return {
+            "evidence_found": evidence_results["evidence_found"],
+            "evidence_scores": evidence_results["evidence_scores"],
+            "project_evaluation": self._evaluate_projects(sections.get("projects", ""), role_expertise),
+            "inferred_skills": inferred_skills,
+            "overall_cv_score": evidence_results["overall_score"]
+        }
+
+    def _extract_cv_sections(self, cv_content: str) -> Dict[str, str]:
+        """Extract different sections from CV content."""
+        if not cv_content:
+            print("Warning: CV content is empty for section extraction")
+            # Return the entire content as experience section
+            return {"experience": cv_content}
+            
+        cv_lower = cv_content.lower()
+        sections = {}
+        
+        # Define common section headers with more flexible patterns
+        section_patterns = {
+            "education": [
+                r'education[\s]*:?',
+                r'academic[\s]*background[\s]*:?',
+                r'qualifications[\s]*:?',
+                r'education\s+and\s+training[\s]*:?',
+                r'educational\s+background[\s]*:?',
+                r'degree',
+                r'education\s+history',
+                r'educational\s+qualifications'
+            ],
+            "experience": [
+                r'experience[\s]*:?',
+                r'work[\s]*history[\s]*:?',
+                r'employment[\s]*history[\s]*:?',
+                r'professional[\s]*experience[\s]*:?',
+                r'work\s+experience',
+                r'employment\s+background',
+                r'career\s+history'
+            ],
+            "skills": [
+                r'skills[\s]*:?',
+                r'technical[\s]*skills[\s]*:?',
+                r'core[\s]*competencies[\s]*:?',
+                r'key[\s]*skills[\s]*:?',
+                r'professional[\s]*skills[\s]*:?',
+                r'expertise',
+                r'competencies'
+            ],
+            "projects": [
+                r'projects[\s]*:?',
+                r'key[\s]*projects[\s]*:?',
+                r'selected[\s]*projects[\s]*:?',
+                r'project\s+experience',
+                r'project\s+history',
+                r'notable\s+projects'
+            ]
         }
         
-        if not cv_content:
-            return analysis
+        # Find all section headers and their positions
+        section_positions = []
+        for section_name, patterns in section_patterns.items():
+            for pattern in patterns:
+                for match in re.finditer(pattern, cv_lower):
+                    section_positions.append((match.start(), section_name))
+        
+        # Sort sections by position
+        section_positions.sort(key=lambda x: x[0])
+        
+        if section_positions:
+            # Extract content between sections
+            for i, (start_pos, section_name) in enumerate(section_positions):
+                # Get end position (next section or end of content)
+                end_pos = section_positions[i + 1][0] if i + 1 < len(section_positions) else len(cv_content)
+                
+                # Extract the section content
+                section_content = cv_content[start_pos:end_pos].strip()
+                if section_content:
+                    # Remove the section header from content
+                    section_content = re.sub(r'^.*?:', '', section_content, flags=re.IGNORECASE).strip()
+                    sections[section_name] = section_content
+                    print(f"Extracted {section_name} section: {len(section_content)} characters")
+        else:
+            print("No section headers found in CV content")
+            # If no sections found, treat entire content as experience section
+            sections["experience"] = cv_content
+            print(f"Using entire content as experience section: {len(cv_content)} characters")
+        
+        return sections
+
+    def _infer_domain_knowledge_from_education(self, education_text: str) -> List[str]:
+        """Infer domain knowledge based on educational background."""
+        inferred_skills = []
+        
+        # Map education fields to domain knowledge
+        domain_mappings = {
+            "finance": ["financial domain knowledge", "financial analysis"],
+            "accounting": ["financial domain knowledge", "accounting"],
+            "economics": ["financial domain knowledge", "economic analysis"],
+            "business": ["business domain knowledge"],
+            "computer science": ["technical domain knowledge", "programming"],
+            "data science": ["data analysis", "statistical modeling"]
+        }
+        
+        if not education_text:
+            return inferred_skills
+        
+        # Check for degree fields
+        for domain, skills in domain_mappings.items():
+            if domain in education_text.lower():
+                print(f"Inferred domain knowledge from education: {domain} -> {skills}")
+                inferred_skills.extend(skills)
+        
+        return inferred_skills
+
+    def _infer_skills_from_experience(self, experience_text: str) -> List[str]:
+        """Infer skills based on work experience descriptions."""
+        inferred_skills = []
+        
+        if not experience_text:
+            return inferred_skills
+        
+        # Look for roles and responsibilities that imply skills
+        role_skill_mapping = {
+            "data analy": ["data analysis", "statistical analysis"],
+            "financ": ["financial analysis", "financial domain knowledge"],
+            "develop": ["software development"],
+            "program": ["programming"],
+            "database": ["database management", "sql"],
+            "machine learning": ["machine learning", "predictive modeling"]
+        }
+        
+        for role_indicator, implied_skills in role_skill_mapping.items():
+            if role_indicator in experience_text.lower():
+                print(f"Inferred skills from experience: {role_indicator} -> {implied_skills}")
+                inferred_skills.extend(implied_skills)
+        
+        return inferred_skills
+
+    def _evaluate_evidence_in_context(self, cv_content: str, sections: Dict[str, str], 
+                                    required_evidence: List[str], inferred_skills: List[str]) -> Dict[str, Any]:
+        """Evaluate required evidence across all CV content with context awareness."""
+        evidence_found = []
+        evidence_scores = {}
         
         cv_lower = cv_content.lower()
         
-        for evidence in role_expertise["required_evidence"]:
+        # Check for direct evidence from required evidence list
+        for evidence in required_evidence:
             evidence_lower = evidence.lower()
-            pattern = f"\\b{evidence_lower}\\w*\\b"
-            matches = re.findall(pattern, cv_lower)
-            sentences_with_evidence = re.findall(f"[^.]*{pattern}[^.]*\\.", cv_lower)
             
-            if matches or sentences_with_evidence:
-                analysis["evidence_found"].append(evidence)
-                base_score = len(matches) * 0.2
-                context_score = len(sentences_with_evidence) * 0.3
-                analysis["evidence_scores"][evidence] = min(1.0, base_score + context_score)
+            # Direct match in CV
+            if evidence_lower in cv_lower:
+                evidence_found.append(evidence)
+                # Determine context quality based on surrounding content
+                context_score = self._assess_evidence_context(cv_lower, evidence_lower)
+                evidence_scores[evidence] = context_score
+                continue
+            
+            # Check for semantic matches using inferred skills
+            for skill in inferred_skills:
+                if self._are_terms_semantically_related(evidence_lower, skill.lower()):
+                    evidence_found.append(evidence)
+                    evidence_scores[evidence] = 0.8  # Good score for inferred match
+                    print(f"Semantic match: {evidence} via inferred skill {skill}")
+                    break
         
-        project_sections = re.split(r'projects?:|work\s+experience:|experience:', cv_lower)[1:]
+        # Calculate overall score
+        if evidence_found:
+            overall_score = sum(evidence_scores.values()) / len(required_evidence)
+        else:
+            overall_score = 0.1  # Minimal score if nothing found
         
-        for section in project_sections:
+        return {
+            "evidence_found": evidence_found,
+            "evidence_scores": evidence_scores,
+            "overall_score": overall_score
+        }
+
+    def _assess_evidence_context(self, cv_text: str, evidence: str) -> float:
+        """Assess the quality of context around evidence mention."""
+        # Find sentences containing the evidence
+        sentences = re.split(r'[.!?]', cv_text)
+        evidence_sentences = [s for s in sentences if evidence in s]
+        
+        if not evidence_sentences:
+            return 0.5  # Default score
+        
+        # Higher score for evidence with action verbs and metrics
+        context_score = 0.6  # Base score
+        
+        for sentence in evidence_sentences:
+            # Check for action verbs
+            if re.search(r'\b(developed|implemented|managed|led|created|designed|analyzed)\b', sentence):
+                context_score += 0.1
+            
+            # Check for metrics/achievements
+            if re.search(r'\b(\d+%|\$\d+|increased|improved|reduced|grew)\b', sentence):
+                context_score += 0.2
+        
+        # Cap at 1.0
+        return min(1.0, context_score)
+
+    def _are_terms_semantically_related(self, term1: str, term2: str) -> bool:
+        """Determine if two terms are semantically related (simplified)."""
+        # Direct substring match
+        if term1 in term2 or term2 in term1:
+            return True
+        
+        # Related terms mapping (could be expanded)
+        related_terms = {
+            "finance": ["financial", "accounting", "banking", "investment"],
+            "machine learning": ["ml", "predictive modeling", "ai", "artificial intelligence"],
+            "database": ["sql", "nosql", "data storage"],
+            "programming": ["coding", "development", "software engineering"],
+            "python": ["py", "python programming"],
+            "analysis": ["analytics", "analyzing", "analytical"]
+        }
+        
+        # Check if terms are related via our mapping
+        for key, related in related_terms.items():
+            if (term1 in [key] + related) and (term2 in [key] + related):
+                return True
+        
+        return False
+
+    def _evaluate_projects(self, projects_text: str, role_expertise: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Evaluate projects section against role requirements."""
+        if not projects_text:
+            return []
+        
+        # Split into individual projects if possible
+        projects = re.split(r'\n(?=Project:|•)', projects_text)
+        if len(projects) <= 1:
+            # Try alternative splitting if no clear project delimiters
+            projects = re.split(r'\n\n+', projects_text)
+        
+        project_evaluations = []
+        
+        for project_text in projects:
+            if len(project_text.strip()) < 20:  # Skip very short sections
+                continue
+                
             project_score = {
-                "indicators_found": [],
-                "quality_indicators": [],
-                "relevance_score": 0.0
+                "relevance_score": 0.0,
+                "technologies": [],
+                "achievements": [],
+                "relevance_factors": []
             }
             
-            for indicator in role_expertise["key_indicators"]:
-                if indicator.lower() in section:
-                    project_score["indicators_found"].append(indicator)
+            # Extract technologies
+            tech_pattern = r'\b(?:using|with|via|through|in)\s+([A-Za-z0-9+#.]+)\b'
+            technologies = re.findall(tech_pattern, project_text.lower())
+            if technologies:
+                project_score["technologies"] = technologies
             
-            for quality in role_expertise["project_qualities"]:
-                if quality.lower() in section:
-                    project_score["quality_indicators"].append(quality)
+            # Check for achievements
+            achievement_pattern = r'\b(?:improved|increased|reduced|achieved|delivered|created)\b.{3,50}(?:\d+%|\$\d+)'
+            achievements = re.findall(achievement_pattern, project_text.lower())
+            if achievements:
+                project_score["achievements"] = [a.strip() for a in achievements]
             
-            if project_score["indicators_found"] or project_score["quality_indicators"]:
-                indicator_score = len(project_score["indicators_found"]) / len(role_expertise["key_indicators"])
-                quality_score = len(project_score["quality_indicators"]) / len(role_expertise["project_qualities"])
-                project_score["relevance_score"] = (indicator_score * 0.6) + (quality_score * 0.4)
-                analysis["project_evaluation"].append(project_score)
+            # Check relevance to role requirements
+            for indicator in role_expertise.get("key_indicators", []):
+                if indicator.lower() in project_text.lower():
+                    project_score["relevance_factors"].append(indicator)
+            
+            # Calculate relevance score based on match factors
+            base_score = 0.3  # Some base relevance
+            tech_score = min(0.3, len(project_score["technologies"]) * 0.1)
+            achievement_score = min(0.2, len(project_score["achievements"]) * 0.1)
+            indicator_score = min(0.2, len(project_score["relevance_factors"]) * 0.1)
+            
+            project_score["relevance_score"] = base_score + tech_score + achievement_score + indicator_score
+            
+            project_evaluations.append(project_score)
         
-        if analysis["evidence_scores"]:
-            evidence_score = sum(analysis["evidence_scores"].values()) / len(role_expertise["required_evidence"])
-            project_score = max([p["relevance_score"] for p in analysis["project_evaluation"]], default=0)
-            analysis["overall_cv_score"] = (evidence_score * 0.6) + (project_score * 0.4)
+        # Sort by relevance
+        project_evaluations.sort(key=lambda p: p["relevance_score"], reverse=True)
         
-        return analysis
+        return project_evaluations
+
     def _evaluate_candidate_cv(self, candidate: Dict[str, Any], role_expertise: Dict[str, Any]) -> float:
         """Evaluate a candidate's CV content against role requirements."""
         cv_content = candidate.get("cv_content", "")
@@ -701,6 +985,110 @@ class AutoGenTalentMatcher:
             explanation.append(f"Missing required skills: {', '.join(missing_required)}.")
         
         return " ".join(explanation)
+
+    def extract_skills_from_text(self, text: str) -> List[str]:
+        """
+        Extract skills from text using more sophisticated pattern matching.
+        
+        Args:
+            text: Text to extract skills from
+            
+        Returns:
+            List of extracted skills
+        """
+        if not text:
+            return []
+        
+        # Convert to lowercase for case-insensitive matching
+        text = text.lower()
+        
+        # Common skill patterns
+        patterns = [
+            r'(?:proficient in|expert in|skilled in|experience with|knowledge of)\s+([^.,;]+)',
+            r'(?:skills?|expertise|competencies?):\s*([^.,;]+)',
+            r'(?:technical skills?|programming languages?|tools?):\s*([^.,;]+)',
+            r'(?:strong|excellent|good|advanced)\s+(?:knowledge|understanding|experience)\s+(?:in|with|of)\s+([^.,;]+)',
+        ]
+        
+        skills = set()
+        for pattern in patterns:
+            matches = re.finditer(pattern, text)
+            for match in matches:
+                skill_text = match.group(1).strip()
+                # Split on common delimiters
+                for skill in re.split(r'[,;/]', skill_text):
+                    skill = skill.strip()
+                    if skill and len(skill) > 2:  # Avoid very short matches
+                        skills.add(skill)
+        
+        return list(skills)
+
+    def match_skills(self, required_skills: List[str], candidate_skills: List[str]) -> float:
+        """
+        Calculate skill match score between required and candidate skills.
+        
+        Args:
+            required_skills: List of required skills
+            candidate_skills: List of candidate skills
+            
+        Returns:
+            Match score between 0 and 1
+        """
+        if not required_skills:
+            return 1.0  # No required skills means perfect match
+        
+        if not candidate_skills:
+            return 0.0
+        
+        # Convert to lowercase for case-insensitive matching
+        required_skills = [skill.lower() for skill in required_skills]
+        candidate_skills = [skill.lower() for skill in candidate_skills]
+        
+        # Calculate exact matches
+        exact_matches = sum(1 for skill in required_skills if skill in candidate_skills)
+        
+        # Calculate partial matches using fuzzy matching
+        partial_matches = 0
+        for req_skill in required_skills:
+            for cand_skill in candidate_skills:
+                # Check for partial matches (e.g., "python" matches "python programming")
+                if req_skill in cand_skill or cand_skill in req_skill:
+                    partial_matches += 1
+                    break
+        
+        # Combine exact and partial matches
+        total_matches = max(exact_matches, partial_matches)
+        
+        return total_matches / len(required_skills)
+
+    def evaluate_candidate_skills(self, job_requirements: Dict[str, Any], candidate_profile: Dict[str, Any]) -> float:
+        """
+        Evaluate candidate's skills against job requirements.
+        
+        Args:
+            job_requirements: Job requirements dictionary
+            candidate_profile: Candidate profile dictionary
+            
+        Returns:
+            Skills match score between 0 and 1
+        """
+        # Extract skills from job requirements
+        required_skills = []
+        if 'skills' in job_requirements:
+            required_skills.extend(job_requirements['skills'])
+        if 'requirements' in job_requirements:
+            required_skills.extend(self.extract_skills_from_text(job_requirements['requirements']))
+        
+        # Extract skills from candidate profile
+        candidate_skills = []
+        if 'skills' in candidate_profile:
+            candidate_skills.extend(candidate_profile['skills'])
+        if 'experience' in candidate_profile:
+            candidate_skills.extend(self.extract_skills_from_text(candidate_profile['experience']))
+        if 'education' in candidate_profile:
+            candidate_skills.extend(self.extract_skills_from_text(candidate_profile['education']))
+        
+        return self.match_skills(required_skills, candidate_skills)
 
 
 # Helper function for LLM configuration

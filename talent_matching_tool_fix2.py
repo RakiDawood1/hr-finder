@@ -60,7 +60,7 @@ class TalentMatchingTool:
         self.talents_range = os.getenv('TALENTS_RANGE', 'Sheet1!A:Z')
         
         # Column index for CV links in talents sheet
-        self.cv_column_index = int(os.getenv('CV_COLUMN_INDEX', '0'))
+        self.cv_column_index = int(os.getenv('CV_COLUMN_INDEX', '14'))
         
         # Cache for column indices 
         self._talents_col_indices = None
@@ -254,13 +254,15 @@ class TalentMatchingTool:
         if not drive_link:
             return ""
             
+        # Clean the link by removing any line breaks and extra spaces
+        drive_link = drive_link.strip().replace('\n', '').replace(' ', '')
+            
         # Pattern for various Google Drive link formats
         patterns = [
             r"https://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)",  # /file/d/ format
-            r"https://drive\.google\.com/open\?id=([a-zA-Z0-9_-]+)",  # open?id= format
-            r"https://docs\.google\.com/document/d/([a-zA-Z0-9_-]+)",  # Google Docs
-            r"https://docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)",  # Google Sheets
-            r"https://docs\.google\.com/presentation/d/([a-zA-Z0-9_-]+)",  # Google Slides
+            r"https://docs\.google\.com/document/d/([a-zA-Z0-9_-]+)(?:\?|$)",  # Google Docs with optional params
+            r"https://docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)(?:\?|$)",  # Google Sheets with optional params
+            r"https://docs\.google\.com/presentation/d/([a-zA-Z0-9_-]+)(?:\?|$)",  # Google Slides with optional params
             r"https://drive\.google\.com/drive/folders/([a-zA-Z0-9_-]+)",  # Folders
             r"id=([a-zA-Z0-9_-]+)",  # Generic id= parameter
             r"https://drive\.google\.com/uc\?export=download&id=([a-zA-Z0-9_-]+)"  # Direct download link
@@ -272,91 +274,125 @@ class TalentMatchingTool:
                 return match.group(1)
                 
         # If no patterns match but link contains a long alphanumeric string, attempt to extract it
-        alphanumeric_pattern = r"[a-zA-Z0-9_-]{25,}"
+        # Look for a string of 25+ alphanumeric characters that appears before any query parameters
+        alphanumeric_pattern = r"([a-zA-Z0-9_-]{25,})(?:\?|$)"
         match = re.search(alphanumeric_pattern, drive_link)
         if match:
-            return match.group(0)
+            return match.group(1)
             
         return ""
     
-    def download_and_extract_text_from_drive_file(self, file_id: str) -> str:
+    def extract_cv_content(self, drive_link: str) -> str:
         """
-        Download a file from Google Drive and extract its text content.
+        Download and extract text content from a CV file.
         
         Args:
-            file_id: The ID of the file in Google Drive
+            drive_link: Google Drive link to the CV file
             
         Returns:
-            The extracted text content
+            Extracted text content from the CV
         """
-        if not file_id:
+        if not drive_link:
+            print("Warning: Empty drive link provided")
             return ""
             
         try:
-            # Get file metadata to determine file type
-            file_metadata = self.drive_service.files().get(fileId=file_id, fields="name,mimeType").execute()
-            file_name = file_metadata.get("name", "")
-            mime_type = file_metadata.get("mimeType", "")
-            
+            # Extract file ID from the drive link
+            file_id = self.extract_file_id_from_drive_link(drive_link)
+            if not file_id:
+                print(f"Warning: Could not extract file ID from link: {drive_link}")
+                return ""
+            print(f"Successfully extracted file ID: {file_id}")
+                
+            # Get file metadata to determine type
+            try:
+                print("Attempting to get file metadata...")
+                file_metadata = self.drive_service.files().get(
+                    fileId=file_id,
+                    fields='mimeType,name'
+                ).execute()
+                mime_type = file_metadata.get('mimeType', '')
+                file_name = file_metadata.get('name', '')
+                print(f"File metadata - Name: {file_name}, MIME Type: {mime_type}")
+            except Exception as e:
+                print(f"Warning: Could not get file metadata: {str(e)}")
+                return ""
+                
             # Download file content
-            request = self.drive_service.files().get_media(fileId=file_id)
-            file_content = io.BytesIO()
-            downloader = MediaIoBaseDownload(file_content, request)
-            
-            done = False
-            while not done:
-                status, done = downloader.next_chunk()
-            
-            file_content.seek(0)
-            
-            # Process according to file type
-            text_content = ""
-            
-            if mime_type == "application/pdf" or file_name.lower().endswith(".pdf"):
-                # Process PDF file
-                try:
-                    pdf_reader = PyPDF2.PdfReader(file_content)
-                    for page_num in range(len(pdf_reader.pages)):
-                        text_content += pdf_reader.pages[page_num].extract_text() + "\n"
-                except Exception as e:
-                    return f"Error extracting PDF text: {str(e)}"
-                        
-            elif mime_type == "application/vnd.google-apps.document":
-                # Google Doc - export as plain text
-                text_content = self.drive_service.files().export(
-                    fileId=file_id, mimeType='text/plain').execute().decode('utf-8')
+            try:
+                if 'pdf' in mime_type.lower():
+                    print("Processing PDF file...")
+                    print("Attempting to download PDF content...")
+                    request = self.drive_service.files().get_media(fileId=file_id)
+                    content = request.execute()
+                    print(f"Downloaded PDF content length: {len(content)} bytes")
                     
-            elif mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" or file_name.lower().endswith(".docx"):
-                # Process DOCX file
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as temp_file:
-                    temp_file.write(file_content.getvalue())
-                    temp_file_path = temp_file.name
-                
-                try:
-                    text_content = docx2txt.process(temp_file_path)
-                except Exception as e:
-                    text_content = f"Error processing DOCX file: {str(e)}"
-                finally:
-                    # Clean up temp file
-                    if os.path.exists(temp_file_path):
-                        os.unlink(temp_file_path)
+                    # Save PDF temporarily
+                    temp_pdf = f"temp_{file_id}.pdf"
+                    print(f"Saving PDF to temporary file: {temp_pdf}")
+                    with open(temp_pdf, 'wb') as f:
+                        f.write(content)
                         
-            elif mime_type == "text/plain" or file_name.lower().endswith((".txt", ".text")):
-                # Plain text file
-                text_content = file_content.getvalue().decode('utf-8', errors='replace')
+                    # Extract text from PDF using pdfplumber
+                    try:
+                        import pdfplumber
+                        print("Opening PDF with pdfplumber...")
+                        with pdfplumber.open(temp_pdf) as pdf:
+                            text = ""
+                            print(f"PDF has {len(pdf.pages)} pages")
+                            for i, page in enumerate(pdf.pages, 1):
+                                print(f"Processing page {i}...")
+                                page_text = page.extract_text()
+                                if page_text:  # Only add if we got text
+                                    text += page_text + "\n"
+                                    print(f"Extracted {len(page_text)} characters from page {i}")
+                                else:
+                                    print(f"Warning: No text extracted from page {i}, trying alternative method")
+                                    page_text = page.extract_text(x_tolerance=3, y_tolerance=3)
+                                    if page_text:
+                                        text += page_text + "\n"
+                                        print(f"Extracted {len(page_text)} characters from page {i} using alternative method")
+                            if not text.strip():  # If no text was extracted
+                                print("Warning: No text extracted from any page")
+                            else:
+                                print(f"Total extracted text length: {len(text)} characters")
+                    except Exception as e:
+                        print(f"Error during PDF text extraction: {str(e)}")
+                        raise
+                    finally:
+                        # Clean up temp file
+                        if os.path.exists(temp_pdf):
+                            print(f"Cleaning up temporary file: {temp_pdf}")
+                            os.remove(temp_pdf)
+                            
+                elif 'word' in mime_type.lower() or file_name.lower().endswith(('.doc', '.docx')):
+                    print("Processing Word document...")
+                    print("Attempting to export Word document as text...")
+                    request = self.drive_service.files().export_media(
+                        fileId=file_id,
+                        mimeType='text/plain'
+                    )
+                    content = request.execute()
+                    text = content.decode('utf-8')
+                    print(f"Extracted text length: {len(text)} characters")
+                    
+                else:
+                    print(f"Warning: Unsupported file type: {mime_type}")
+                    return ""
+                    
+            except Exception as e:
+                print(f"Warning: Error downloading or processing file: {str(e)}")
+                return ""
                 
-            else:
-                # Unsupported file type
-                return f"Unsupported file type: {mime_type}. Please convert to PDF, DOCX, or TXT."
+            # Clean and validate content
+            text = text.strip()
+            if not text:
+                print("Warning: No text content extracted after cleaning")
+            return text
             
-            return text_content
-            
-        except HttpError as error:
-            print(f"Error accessing file {file_id}: {error}")
-            return f"Error: {str(error)}"
         except Exception as e:
-            print(f"Error processing file {file_id}: {e}")
-            return f"Error: {str(e)}"
+            print(f"Error extracting CV content: {str(e)}")
+            return ""
     
     def get_cv_content(self, cv_link: str) -> str:
         """
@@ -375,7 +411,7 @@ class TalentMatchingTool:
             return "Error: Could not extract file ID from the provided link."
         
         # Download and extract text
-        return self.download_and_extract_text_from_drive_file(file_id)
+        return self.extract_cv_content(cv_link)
     
     def get_talent_with_cv(self, row_number: int) -> Tuple[Dict[str, Any], str]:
         """
@@ -393,6 +429,7 @@ class TalentMatchingTool:
         talent_row = talents_df[talents_df['row_number'] == row_number]
         
         if talent_row.empty:
+            print(f"Warning: No talent found for row {row_number}")
             return {}, "Error: Talent not found."
         
         # Convert row to dictionary
@@ -404,8 +441,12 @@ class TalentMatchingTool:
         
         if cv_column_name and cv_column_name in talent_dict:
             cv_link = talent_dict[cv_column_name]
+            print(f"Found CV link for {talent_dict.get('name', 'Unknown')}: {cv_link}")
+        else:
+            print(f"Warning: No CV column found or CV link missing for {talent_dict.get('name', 'Unknown')}")
             
         cv_content = self.get_cv_content(cv_link) if cv_link else "No CV link provided."
+        print(f"CV content length for {talent_dict.get('name', 'Unknown')}: {len(cv_content)} characters")
         
         return talent_dict, cv_content
     
