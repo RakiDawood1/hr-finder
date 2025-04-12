@@ -195,6 +195,7 @@ class AutoGenTalentMatcher:
         print(f"Filtering candidates based on job preferences for: {job_title}")
         
         filtered_candidates = []
+        candidate_scores = []
         
         for candidate in candidates:
             candidate_name = candidate.get("name", "Unknown")
@@ -208,18 +209,24 @@ class AutoGenTalentMatcher:
             
             if is_related:
                 print(f"  {candidate_name}: Preference '{job_preference}' MATCHES job '{job_title}' (similarity: {similarity:.2f})")
-                filtered_candidates.append(candidate)
+                candidate_scores.append((candidate, similarity))
             else:
                 print(f"  {candidate_name}: Preference '{job_preference}' does NOT match job '{job_title}' - SKIP")
         
+        # Sort candidates by similarity score
+        candidate_scores.sort(key=lambda x: x[1], reverse=True)
+        filtered_candidates = [candidate for candidate, _ in candidate_scores]
+        
         print(f"\nJob preference filtering complete:")
         print(f"  {len(filtered_candidates)} candidates match the job preference out of {len(candidates)} total")
+        
         if filtered_candidates:
-            print("\nCandidates matching job preference:")
-            for i, candidate in enumerate(filtered_candidates, 1):
-                print(f"  {i}. {candidate.get('name', 'Unknown')}")
+            print("\nCandidates matching job preference (sorted by relevance):")
+            for i, (candidate, score) in enumerate(candidate_scores, 1):
+                print(f"  {i}. {candidate.get('name', 'Unknown')} - Similarity: {score:.2f}")
         
         return filtered_candidates
+    
     def _research_role_requirements(self, job_title: str, important_qualities: str) -> Dict[str, Any]:
         """Research and analyze role requirements based on job title and important qualities."""
         expertise = {
@@ -855,19 +862,29 @@ class AutoGenTalentMatcher:
         print(f"\nEVALUATION PROCESS FOR JOB: {job.get('title', 'Unknown Position')}")
         print("="*80)
         
-        job_preference_filtered = self._filter_candidates_by_job_preference(job, candidates)
+        # STAGE 1: Filter by Job Preference
+        print("\nSTAGE 1: FILTERING BY JOB PREFERENCE")
+        print("-"*80)
+        
+        # Filter candidates based on their job preference
+        job_preference_filtered = []
+        for candidate in candidates:
+            if 'job_preference' in candidate and candidate['job_preference']:
+                # Check if the candidate's job preference matches the current job
+                is_related, similarity = self._are_job_titles_related(
+                    job.get('title', '').lower(),
+                    candidate['job_preference'].lower()
+                )
+                if is_related:
+                    job_preference_filtered.append(candidate)
+                    print(f"✓ {candidate.get('name', 'Unknown')} - Job preference matches")
+                else:
+                    print(f"✗ {candidate.get('name', 'Unknown')} - Job preference doesn't match")
+            else:
+                print(f"✗ {candidate.get('name', 'Unknown')} - No job preference specified")
         
         if not job_preference_filtered:
-            print("\nNo candidates match the job preference. Proceeding with all candidates.")
-            job_preference_filtered = candidates
-        
-        print("\nSTEP 2: COORDINATOR AGENT - DETAILED CANDIDATE FILTERING")
-        print("-"*80)
-        print("Analyzing job requirements and filtering candidates based on detailed criteria...")
-        
-        filtered_candidates = self._filter_candidates(job, job_preference_filtered, min_threshold)
-        
-        if not filtered_candidates:
+            print("\nNo candidates match the job preference.")
             return {
                 "job_title": job.get("title", "Unknown Position"),
                 "total_candidates": len(candidates),
@@ -876,45 +893,228 @@ class AutoGenTalentMatcher:
                 "ranked_candidates": []
             }
         
-        print("\nSTEP 3: HR MANAGER AGENT - DETAILED CANDIDATE EVALUATION")
+        print(f"\nFound {len(job_preference_filtered)} candidates matching the job preference")
+        
+        # STAGE 2: Analyze and Score Matching Candidates
+        print("\nSTAGE 2: ANALYZING AND SCORING MATCHING CANDIDATES")
         print("-"*80)
-        print("Performing detailed analysis and ranking of pre-filtered candidates...")
         
-        ranked_candidates = self._rank_candidates_with_detail(job, filtered_candidates, top_n)
+        # Analyze CVs and score candidates
+        scored_candidates = []
+        for candidate in job_preference_filtered:
+            print(f"\nAnalyzing candidate: {candidate.get('name', 'Unknown')}")
+            
+            # Get role expertise for CV analysis
+            role_expertise = self._research_role_requirements(
+                job.get('title', ''),
+                job.get('important_qualities', '')
+            )
+            
+            # Analyze CV content
+            cv_analysis = self._analyze_cv_content(candidate.get('cv_content', ''), role_expertise)
+            
+            # Calculate scores
+            skills_score = self._evaluate_skills_match(job, candidate)
+            experience_score = self._evaluate_experience_match(job, candidate)
+            location_score = self._evaluate_location_match(job, candidate)
+            cv_score = cv_analysis.get('overall_score', 0.0)
+            
+            # Calculate final score (weighted average)
+            final_score = (skills_score * 0.3 + 
+                         experience_score * 0.2 + 
+                         location_score * 0.1 + 
+                         cv_score * 0.4)
+            
+            # Add to scored candidates
+            scored_candidates.append({
+                'candidate': candidate,
+                'score': final_score,
+                'skills_score': skills_score,
+                'experience_score': experience_score,
+                'location_score': location_score,
+                'cv_score': cv_score,
+                'cv_analysis': cv_analysis
+            })
         
+        # Sort candidates by score
+        scored_candidates.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Prepare final results
         result = {
             "job_title": job.get("title", "Unknown Position"),
             "total_candidates": len(candidates),
-            "filtered_by_preference": len(job_preference_filtered),
-            "filtered_candidates": len(filtered_candidates),
-            "top_candidates": len(ranked_candidates),
-            "ranked_candidates": ranked_candidates
+            "filtered_candidates": len(job_preference_filtered),
+            "top_candidates": len(scored_candidates),
+            "ranked_candidates": [{
+                'name': c['candidate'].get('name', 'Unknown'),
+                'score': c['score'],
+                'skills_score': c['skills_score'],
+                'experience_score': c['experience_score'],
+                'location_score': c['location_score'],
+                'cv_score': c['cv_score'],
+                'cv_analysis': c['cv_analysis']
+            } for c in scored_candidates]
         }
         
         print("\nEVALUATION COMPLETE")
-        print(f"Found {len(ranked_candidates)} suitable candidates out of {len(candidates)} total applicants")
+        print(f"Found {len(scored_candidates)} suitable candidates out of {len(candidates)} total applicants")
         print(f"First filtered to {len(job_preference_filtered)} candidates by job preference")
-        print(f"Then filtered to {len(filtered_candidates)} candidates by detailed criteria")
         print("="*80)
         
         return result
     
     def match_candidates_to_job(self, job: JobRequirement, all_candidates: List[CandidateProfile],
                               min_match_threshold: float = 0.3, top_n: int = 10) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Match candidates to a job using the enhanced matching framework."""
+        """Match candidates to a job using the enhanced two-stage filtering framework."""
         logger.info(f"Starting candidate matching process for job: {job.title}")
         
         job_dict = job.model_dump()
         candidate_dicts = [c.model_dump() for c in all_candidates]
         
-        result = self._evaluate_candidates_for_job(
-            job_dict, 
-            candidate_dicts, 
-            top_n=top_n, 
-            min_threshold=min_match_threshold
-        )
+        # STAGE 1: Lightweight pre-filtering
+        logger.info(f"Performing initial lightweight filtering on {len(all_candidates)} candidates")
+        print("\n" + "="*80)
+        print(f"TALENT MATCHING PROCESS: {job.title}")
+        print("="*80)
         
-        return result.get("ranked_candidates", []), []
+        pre_filtered_candidates = self._pre_filter_candidates(job_dict, candidate_dicts)
+        logger.info(f"Pre-filtered to {len(pre_filtered_candidates)} candidates based on basic criteria")
+        
+        # If we have too few candidates after pre-filtering, relax the criteria
+        if len(pre_filtered_candidates) < min(5, top_n):
+            logger.info(f"Too few candidates ({len(pre_filtered_candidates)}) after pre-filtering, relaxing criteria")
+            # Fall back to all candidates if pre-filtering is too strict
+            if len(pre_filtered_candidates) == 0:
+                pre_filtered_candidates = candidate_dicts
+                logger.info(f"Using all {len(candidate_dicts)} candidates as fallback")
+            else:
+                # We have some candidates, but need more - could add more logic here to relax specific criteria
+                pass
+        
+        # STAGE 2: Detailed evaluation with CV analysis
+        try:
+            logger.info(f"Performing detailed analysis on {len(pre_filtered_candidates)} pre-filtered candidates")
+            match_results = self._evaluate_candidates_for_job(
+                job_dict, 
+                pre_filtered_candidates, 
+                top_n=top_n, 
+                min_threshold=min_match_threshold
+            )
+            
+        except Exception as e:
+            logger.error(f"Error during detailed matching process: {str(e)}")
+            import traceback
+            logger.error(f"Stack trace: {traceback.format_exc()}")
+            return [], []
+        
+        return match_results.get("ranked_candidates", []), []
+
+    def _pre_filter_candidates(self, job: Dict[str, Any], candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        First-stage filtering to quickly eliminate obviously non-matching candidates.
+        Includes CV analysis to better identify relevant candidates early.
+        
+        Args:
+            job: Dictionary containing job requirements
+            candidates: List of candidate dictionaries
+            
+        Returns:
+            List of pre-filtered candidate dictionaries
+        """
+        print("\nSTAGE 1: INITIAL CANDIDATE PRE-FILTERING")
+        print("-"*80)
+        print(f"Job Title: {job.get('title', 'Unknown Position')}")
+        
+        # Extract minimum requirements for quick filtering
+        min_years_experience = job.get("min_years_experience", 0)
+        job_title = job.get("title", "").lower()
+        job_location = job.get("location", "")
+        remote_friendly = job.get("remote_friendly", False)
+        
+        # Extract required skills from job
+        required_skills = {skill.get("name", "").lower() for skill in job.get("required_skills", [])}
+        
+        # Research role requirements for CV analysis
+        role_expertise = self._research_role_requirements(job_title, job.get("important_qualities", ""))
+        
+        filtered_candidates = []
+        total_candidates = len(candidates)
+        filters_applied = {
+            "job_preference": 0,
+            "experience": 0,
+            "location": 0,
+            "skills": 0,
+            "cv_relevance": 0
+        }
+        
+        print(f"\nApplying filters to {total_candidates} candidates:")
+        print(f"1. Job preference alignment")
+        print(f"2. Minimum experience: {min_years_experience} years")
+        print(f"3. Location compatibility")
+        print(f"4. Basic skill keywords matching")
+        print(f"5. CV content relevance")
+        
+        for candidate in candidates:
+            candidate_name = candidate.get("name", "Unknown")
+            passed_filters = True
+            reasons = []
+            
+            # Filter 1: Job preference alignment
+            job_preference = candidate.get("position_preference", "") or candidate.get("jobs_applying_for", "")
+            if job_preference:
+                is_related, _ = self._are_job_titles_related(job_title, job_preference)
+                if not is_related:
+                    passed_filters = False
+                    reasons.append("Job preference mismatch")
+                    filters_applied["job_preference"] += 1
+            
+            # Filter 2: Years of experience
+            years_experience = candidate.get("years_of_experience", 0)
+            if years_experience < min_years_experience and min_years_experience > 0:
+                passed_filters = False
+                reasons.append(f"Insufficient experience ({years_experience} vs {min_years_experience})")
+                filters_applied["experience"] += 1
+            
+            # Filter 3: Location compatibility
+            if not remote_friendly and job_location:
+                current_location = candidate.get("current_location", "").lower()
+                willing_to_relocate = candidate.get("willing_to_relocate", False)
+                if not willing_to_relocate and job_location.lower() not in current_location:
+                    passed_filters = False
+                    reasons.append("Location mismatch")
+                    filters_applied["location"] += 1
+            
+            # Filter 4: Basic skill matching
+            candidate_skills = {skill.get("name", "").lower() for skill in candidate.get("skills", [])}
+            if required_skills and not any(skill in candidate_skills for skill in required_skills):
+                passed_filters = False
+                reasons.append("No matching required skills")
+                filters_applied["skills"] += 1
+            
+            # Filter 5: CV content relevance (only if candidate passed other filters)
+            if passed_filters and candidate.get("cv_content"):
+                cv_match = self._evaluate_candidate_cv(candidate, role_expertise)
+                if cv_match < 0.2:  # Low CV relevance threshold
+                    passed_filters = False
+                    reasons.append("Low CV relevance")
+                    filters_applied["cv_relevance"] += 1
+            
+            if passed_filters:
+                print(f"  ✓ {candidate_name} - PASSED")
+                filtered_candidates.append(candidate)
+            else:
+                print(f"  ✗ {candidate_name} - FILTERED OUT: {', '.join(reasons)}")
+        
+        print(f"\nPre-filtering results:")
+        print(f"  - Starting candidates: {total_candidates}")
+        print(f"  - Candidates filtered out: {total_candidates - len(filtered_candidates)}")
+        print(f"  - Remaining candidates: {len(filtered_candidates)}")
+        
+        print("\nFilters effectiveness:")
+        for filter_name, count in filters_applied.items():
+            print(f"  - {filter_name} filter: {count} candidates")
+        
+        return filtered_candidates
 
     def _detailed_skill_matching(self, job: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, bool]:
         """

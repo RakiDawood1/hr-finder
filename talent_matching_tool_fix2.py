@@ -397,7 +397,8 @@ class TalentMatchingTool:
             
             text = ""
             # Handle different file types
-            if 'document' in mime_type:
+            if 'application/vnd.google-apps.document' in mime_type:
+                # Native Google Doc
                 print("Exporting Google Doc as text...")
                 request = self.drive_service.files().export_media(
                     fileId=file_id,
@@ -406,44 +407,88 @@ class TalentMatchingTool:
                 content = request.execute()
                 text = content.decode('utf-8')
                 
-            elif 'pdf' in mime_type:
+            elif 'application/pdf' in mime_type:
+                # For PDF files
                 print("Downloading PDF content...")
                 request = self.drive_service.files().get_media(fileId=file_id)
-                content = request.execute()
-                
-                with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
-                    temp_pdf.write(content)
-                    temp_pdf_path = temp_pdf.name
+                content = io.BytesIO(request.execute())
                 
                 try:
-                    import pdfplumber
-                    with pdfplumber.open(temp_pdf_path) as pdf:
-                        text_parts = []
-                        for page in pdf.pages:
-                            text_parts.append(page.extract_text() or '')
-                        text = '\n\n'.join(text_parts)
-                finally:
-                    if os.path.exists(temp_pdf_path):
-                        os.unlink(temp_pdf_path)
+                    # Try to use pdfplumber first if available
+                    try:
+                        import pdfplumber
+                        with pdfplumber.open(content) as pdf:
+                            text_parts = []
+                            for page in pdf.pages:
+                                text_parts.append(page.extract_text() or '')
+                            text = '\n\n'.join(text_parts)
+                    except ImportError:
+                        # Fall back to PyPDF2
+                        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
+                            temp_pdf.write(content.getvalue())
+                            temp_pdf_path = temp_pdf.name
                         
-            else:
-                print(f"Attempting text extraction from {mime_type}...")
+                        try:
+                            pdf_reader = PyPDF2.PdfReader(temp_pdf_path)
+                            text_parts = []
+                            for page in pdf_reader.pages:
+                                text_parts.append(page.extract_text() or '')
+                            text = '\n\n'.join(text_parts)
+                        finally:
+                            if os.path.exists(temp_pdf_path):
+                                os.unlink(temp_pdf_path)
+                except Exception as pdf_error:
+                    print(f"Error extracting PDF content: {str(pdf_error)}")
+                    return ""
+                    
+            elif 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' in mime_type:
+                # For DOCX files - download and process using docx2txt
+                print("Downloading and processing DOCX file...")
+                request = self.drive_service.files().get_media(fileId=file_id)
+                content = io.BytesIO(request.execute())
+                
+                # Save as temporary file
+                with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as temp_file:
+                    temp_file.write(content.getvalue())
+                    temp_file_path = temp_file.name
+                
                 try:
-                    request = self.drive_service.files().export_media(
-                        fileId=file_id,
-                        mimeType='text/plain'
-                    )
-                    content = request.execute()
-                    text = content.decode('utf-8')
-                except Exception:
+                    # Extract text using docx2txt
+                    text = docx2txt.process(temp_file_path)
+                    print(f"Successfully extracted text from DOCX using docx2txt")
+                except Exception as docx_error:
+                    print(f"Error with docx2txt, trying alternative method: {str(docx_error)}")
+                    try:
+                        # Alternative approach using python-docx
+                        import docx
+                        doc = docx.Document(temp_file_path)
+                        text = "\n".join([para.text for para in doc.paragraphs])
+                        print(f"Successfully extracted text from DOCX using python-docx")
+                    except Exception as alt_error:
+                        print(f"Error extracting DOCX content: {str(alt_error)}")
+                        return ""
+                finally:
+                    # Clean up temporary file
+                    if os.path.exists(temp_file_path):
+                        os.unlink(temp_file_path)
+            else:
+                # For other file types, try direct download
+                print(f"Attempting direct download of {mime_type} file...")
+                try:
                     request = self.drive_service.files().get_media(fileId=file_id)
                     content = request.execute()
                     text = content.decode('utf-8', errors='ignore')
+                except Exception as e:
+                    print(f"Error downloading file content: {str(e)}")
+                    return ""
             
             # Clean and validate the extracted text
             if text:
                 text = text.strip()
                 print(f"Successfully extracted {len(text)} characters")
+                # Print first 100 chars as debug info
+                if len(text) > 100:
+                    print(f"Text preview: {text[:100]}...")
                 return text
             else:
                 print("Warning: No text content extracted")
