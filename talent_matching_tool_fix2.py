@@ -679,17 +679,9 @@ class TalentMatchingTool:
                 talent_dict["jobs_applying_for"] = job_pref_value
                 print(f"Set job preference for {talent_dict.get('Name', 'unknown')}: '{job_pref_value}'")
         
-        # Set skills data from the correct column
-        skills_col_idx = col_indices['skills']
-        if len(row_data) > skills_col_idx:
-            skills_value = row_data[skills_col_idx]
-            if skills_value:
-                # Look for a key that could contain skills
-                skills_key = next((key for key in talent_dict.keys() if key.lower() == "skills"), None)
-                if skills_key:
-                    talent_dict[skills_key] = skills_value
-                else:
-                    talent_dict["Skills"] = skills_value
+        # Initialize skills as an empty list if not present
+        if "Skills" not in talent_dict and "skills" not in talent_dict:
+            talent_dict["skills"] = []
         
         return talent_dict
     
@@ -741,100 +733,309 @@ class TalentMatchingTool:
             return None
     
     def get_all_talent_models(self) -> List[CandidateProfile]:
-        """Retrieve all talent data and parse into CandidateProfile models."""
+        """
+        Retrieve all talents as validated Pydantic models.
+        
+        Returns:
+            A list of validated CandidateProfile models
+        """
         try:
+            # Get all the data from the talents sheet
             result = self.sheets_service.spreadsheets().values().get(
                 spreadsheetId=self.talents_sheet_id,
                 range=self.talents_range
             ).execute()
             
             values = result.get('values', [])
-            
-            if not values or len(values) < 2:
-                print("Warning: No talent data found or only headers.")
+            if not values:
+                print("No data found in the talents sheet")
                 return []
             
             headers = values[0]
-            talent_data = values[1:]
-            
-            col_indices = self._get_talents_column_indices()
-            
-            print("\nDEBUG: Processing talent models (without upfront CV fetch)")
-            print("--------------------------------------------------")
-            print(f"Found {len(talent_data)} candidates in sheet")
-            print(f"CV column index: {col_indices['cv']}")
-            
             talent_models = []
-            for i, row in enumerate(talent_data):
-                row_number = i + 2  # Sheet rows are 1-indexed, data starts at row 2
+            
+            # Process each talent row (skip header row)
+            for row_idx, row_data in enumerate(values[1:], start=2):  # Start from row 2 (row after header)
                 try:
-                    print(f"\nProcessing candidate {row_number}: {row[col_indices['name']] if len(row) > col_indices['name'] else 'Unknown'}")
+                    # Create dictionary with available data
+                    talent_dict = {headers[i]: row_data[i] for i in range(min(len(headers), len(row_data)))}
                     
-                    # Prepare data dictionary from the row
-                    talent_dict = {}
-                    for idx, header in enumerate(headers):
-                        if idx < len(row):
-                            talent_dict[header] = row[idx]
-                        else:
-                            talent_dict[header] = "" # Handle rows with fewer columns than headers
+                    # Add row number
+                    talent_dict["row_number"] = row_idx
                     
-                    # Get CV link if available
-                    cv_link = row[col_indices['cv']] if len(row) > col_indices['cv'] else None
+                    # Enhance the talent data
+                    talent_dict = self._enhance_talent_from_sheet(talent_dict, row_data, headers)
+                    
+                    # Ensure skills is properly initialized
+                    talent_dict.setdefault("skills", [])
+                    
+                    # Try to get CV content
+                    cv_link = talent_dict.get("CV", "")
                     if cv_link:
-                        print(f"CV Link stored: {cv_link}")
+                        try:
+                            cv_content = self.extract_cv_content(cv_link)
+                            talent_dict["cv_content"] = cv_content
+                        except Exception as cv_err:
+                            print(f"Warning: Error extracting CV for row {row_idx}: {cv_err}")
+                            talent_dict["cv_content"] = ""
+                    else:
+                        talent_dict["cv_content"] = ""
                     
-                    # Prepare data for Pydantic model
-                    name_value = row[col_indices.get('name', 0)] if len(row) > col_indices.get('name', 0) else ""
-                    print(f"Name from sheet: '{name_value}'")  # Debug output to verify name
-                    
-                    candidate_data = {
-                        "name": name_value,
-                        # Initialize skills as empty; they will be populated by CV analysis later
-                        "skills": [], 
-                        "years_of_experience": row[col_indices.get('experience', 6)] if len(row) > col_indices.get('experience', 6) else 0,
-                        "current_title": row[col_indices.get('position', 5)] if len(row) > col_indices.get('position', 5) else "",
-                        "position_preference": row[col_indices.get('job_preference', 5)] if len(row) > col_indices.get('job_preference', 5) else "",
-                        "jobs_applying_for": row[col_indices.get('job_preference', 5)] if len(row) > col_indices.get('job_preference', 5) else "", # Use same column
-                        "current_location": row[col_indices.get('location', 4)] if len(row) > col_indices.get('location', 4) else "",
-                        "cv_link": cv_link,
-                        "row_number": row_number
-                        # Add other fields as needed, ensuring they exist in col_indices and row
-                    }
-
-                    # Debug: Print specific field assignments
-                    if len(row) > col_indices.get('experience', 6):
-                        print(f"Set experience for {candidate_data['name']}: {candidate_data['years_of_experience']}")
-                    if len(row) > col_indices.get('job_preference', 5):
-                        print(f"Set job preference for {candidate_data['name']}: '{candidate_data['position_preference']}'")
-
-                    print("\nDEBUG: Parsing candidate to model")
-                    print("--------------------------------------------------")
-                    
-                    # Parse and validate
-                    # Pass only candidate_data dict and cv_content=None
-                    candidate_model = parse_candidate_to_model(candidate_data, cv_content=None)
-                    
-                    if candidate_model:
-                        print(f"Processing candidate: {candidate_model.name}")
-                        print(f"CV content length: {len(candidate_model.cv_content) if candidate_model.cv_content else 0}")
-                        print(f"Years of experience: {candidate_model.years_of_experience}")
-                        talent_models.append(candidate_model)
+                    # Parse and validate as CandidateProfile model
+                    try:
+                        talent_model = parse_candidate_to_model(talent_dict, cv_content=talent_dict.get("cv_content", ""), row_number=row_idx)
+                        talent_models.append(talent_model)
+                    except Exception as parse_err:
+                        print(f"Error parsing model for row {row_idx}: {parse_err}")
                 except Exception as e:
-                    print(f"Error processing candidate at row {row_number}: {str(e)}")
-                    import traceback
-                    print(f"Stack trace: {traceback.format_exc()}")
-                    continue # Skip this candidate and move to the next
-                    
-            print(f"\nProcessed {len(talent_models)} candidate models (CV content fetch deferred)")
+                    print(f"Error processing talent row {row_idx}: {str(e)}")
+                    continue
+            
+            if not talent_models:
+                print("Warning: No valid talent models could be created")
+            else:
+                print(f"Successfully created {len(talent_models)} talent models")
+            
             return talent_models
+            
         except HttpError as error:
-            print(f"An HTTP error occurred: {error}")
+            print(f"Error retrieving talents: {error}")
             return []
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
-            import traceback
-            print(f"Stack trace: {traceback.format_exc()}")
-            return []
+
+    # New methods added from AutoGenTalentMatcher class
+    
+    def extract_skills_from_text(self, text: str) -> List[str]:
+        """Extract skills from text using multiple patterns, focusing on data science."""
+        skills = set()
+        text_lower = text.lower()
+        
+        # Define more comprehensive skill patterns, especially for data science
+        skill_patterns = [
+            # Programming Languages & Core Libraries
+            r'\b(python|r|sql|java|scala|c\+\+|julia)\b',
+            r'\b(pandas|numpy|scipy|scikit-learn|sklearn|matplotlib|seaborn|plotly)\b',
+            r'\b(tensorflow|keras|pytorch|theano|caffe|mxnet|jax)\b',
+            r'\b(nltk|spacy|gensim|transformers)\b', # NLP
+            r'\b(opencv|pillow)\b', # Computer Vision
+            
+            # Databases & Data Warehousing
+            r'\b(sql|mysql|postgresql|postgres|sqlite|sql server|tsql|pl/sql|oracle|mongodb|cassandra|redis|neo4j)\b',
+            r'\b(bigquery|redshift|snowflake|teradata|hive|presto|spark sql)\b',
+            
+            # Big Data & Distributed Computing
+            r'\b(spark|pyspark|hadoop|hdfs|mapreduce|kafka|flink|storm)\b',
+            
+            # Cloud Platforms
+            r'\b(aws|azure|gcp|google cloud|amazon web services)\b',
+            r'\b(sagemaker|azure ml|google ai platform|databricks|kubernetes|docker)\b',
+            
+            # ML/AI Concepts & Techniques
+            r'\b(machine learning|ml|deep learning|dl|artificial intelligence|ai)\b',
+            r'\b(natural language processing|nlp|computer vision|cv|reinforcement learning|rl)\b',
+            r'\b(regression|classification|clustering|dimensionality reduction|feature engineering)\b',
+            r'\b(neural networks?|cnn|rnn|lstm|transformer[s]?)\b',
+            r'\b(gradient boosting|xgboost|lightgbm|catboost|random forest|svm|decision tree[s]?)\b',
+            r'\b(a/b testing|experimentation|statistical modeling|statistics|probability)\b',
+            
+            # BI & Visualization Tools
+            r'\b(tableau|power bi|powerbi|qlik|looker|d3.js|ggplot2)\b',
+            
+            # General Software Engineering
+            r'\b(git|linux|bash|shell scripting|api[s]?|rest api)\b'
+        ]
+        
+        # Contextual patterns (e.g., "experience with Python")
+        context_patterns = [
+            r'(?:proficient in|expert in|skilled in|experience with|knowledge of|working with|using)\s+((?:\b\w+\b[\s,]*){1,4})',
+            r'(?:skills?|expertise|competencies?)\s*[:\-]?\s*((?:\b\w+\b[\s,]*){1,10})'
+        ]
+
+        # Direct keyword matching
+        for pattern in skill_patterns:
+            matches = re.findall(pattern, text_lower)
+            for match in matches:
+                skills.add(match.strip())
+
+        # Contextual matching
+        for pattern in context_patterns:
+            matches = re.findall(pattern, text_lower)
+            for match_group in matches:
+                # Potential skills are within the matched group
+                potential_skills = match_group.split(',')
+                for ps in potential_skills:
+                    ps_clean = ps.strip()
+                    if len(ps_clean) > 1: # Avoid single letters
+                        # Check if the potential skill matches any known patterns directly
+                        for skill_pattern in skill_patterns:
+                            if re.search(skill_pattern, ps_clean):
+                                skills.add(ps_clean)
+                                break # Add once per potential skill
+                        # Basic check for likely skills (e.g., alphanumeric, possibly with ., +, #)
+                        if re.match(r'^[a-z0-9\.\+\#\s\-/]+$', ps_clean) and len(ps_clean) <= 30:
+                             skills.add(ps_clean) # Add plausible skills even if not in specific list
+                             
+        # Clean up common non-skill words often caught by context patterns
+        non_skills = {"various", "multiple", "different", "tools", "technologies", "languages", "concepts", "methods", "techniques", "including", "such as"}
+        skills = {s for s in skills if s not in non_skills and len(s) > 1} # Remove single letters/short strings
+                             
+        print(f"Extracted {len(skills)} unique skills from text.")
+        
+        return list(skills)
+    
+    def extract_cv_sections(self, cv_content: str) -> Dict[str, str]:
+        """Extract different sections from CV content with improved pattern matching."""
+        if not cv_content:
+            print("Warning: CV content is empty for section extraction")
+            return {"experience": cv_content}
+        
+        cv_lower = cv_content.lower()
+        sections = {}
+        
+        # Define comprehensive section headers with more flexible patterns
+        section_patterns = {
+            "education": [
+                r'education[\s]*:?',
+                r'academic[\s]*background[\s]*:?',
+                r'qualifications[\s]*:?',
+                r'education\s+and\s+training[\s]*:?',
+                r'educational\s+background[\s]*:?',
+                r'degree',
+                r'education\s+history',
+                r'educational\s+qualifications',
+                r'certifications?[\s]*:?',
+                r'training[\s]*:?'
+            ],
+            "experience": [
+                r'experience[\s]*:?',
+                r'work[\s]*history[\s]*:?',
+                r'employment[\s]*history[\s]*:?',
+                r'professional[\s]*experience[\s]*:?',
+                r'work\s+experience',
+                r'employment\s+background',
+                r'career\s+history',
+                r'professional\s+background',
+                r'work\s+history',
+                r'employment\s+experience'
+            ],
+            "skills": [
+                r'skills[\s]*:?',
+                r'technical[\s]*skills[\s]*:?',
+                r'core[\s]*competencies[\s]*:?',
+                r'key[\s]*skills[\s]*:?',
+                r'professional[\s]*skills[\s]*:?',
+                r'expertise',
+                r'competencies',
+                r'technical\s+expertise',
+                r'areas\s+of\s+expertise',
+                r'professional\s+competencies'
+            ],
+            "projects": [
+                r'projects[\s]*:?',
+                r'key[\s]*projects[\s]*:?',
+                r'selected[\s]*projects[\s]*:?',
+                r'project\s+experience',
+                r'project\s+history',
+                r'notable\s+projects',
+                r'achievements',
+                r'key\s+achievements',
+                r'notable\s+achievements',
+                r'project\s+portfolio'
+            ],
+            "summary": [
+                r'summary[\s]*:?',
+                r'profile[\s]*:?',
+                r'professional\s+summary[\s]*:?',
+                r'career\s+summary[\s]*:?',
+                r'executive\s+summary[\s]*:?',
+                r'overview[\s]*:?',
+                r'introduction[\s]*:?'
+            ]
+        }
+        
+        # Find all section headers and their positions
+        section_positions = []
+        for section_name, patterns in section_patterns.items():
+            for pattern in patterns:
+                for match in re.finditer(pattern, cv_lower):
+                    section_positions.append((match.start(), section_name))
+        
+        # Sort sections by position
+        section_positions.sort(key=lambda x: x[0])
+        
+        # Extract content between sections
+        for i, (start_pos, section_name) in enumerate(section_positions):
+            if i < len(section_positions) - 1:
+                next_start = section_positions[i + 1][0]
+                sections[section_name] = cv_content[start_pos:next_start].strip()
+            else:
+                sections[section_name] = cv_content[start_pos:].strip()
+        
+        # If no sections found, treat entire content as experience
+        if not sections:
+            sections["experience"] = cv_content
+        
+        return sections
+        
+    def analyze_cv_content(self, cv_content: str, role_expertise: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Analyze CV content for skills and qualities."""
+        if not cv_content or not cv_content.strip():
+            print("Warning: Empty CV content provided")
+            return {
+                "evidence_found": [],
+                "evidence_scores": {},
+                "project_evaluation": [],
+                "leadership_indicators": [],
+                "skill_mentions": {},
+                "experience_context": {},
+                "overall_cv_score": 0.0
+            }
+        
+        print(f"\nAnalyzing CV content ({len(cv_content)} characters)...")
+        
+        # Preprocess and section the CV
+        sections = self.extract_cv_sections(cv_content)
+        
+        if not sections:
+            print("Warning: No sections could be extracted from CV content")
+            return {
+                "evidence_found": [],
+                "evidence_scores": {},
+                "project_evaluation": [],
+                "inferred_skills": [],
+                "overall_cv_score": 0.0
+            }
+        
+        # Extract skills from different sections
+        inferred_skills = []
+        
+        # Extract from skills section
+        if "skills" in sections:
+            skills_text = sections["skills"]
+            inferred_skills.extend(self.extract_skills_from_text(skills_text))
+        
+        # Extract from experience section
+        if "experience" in sections:
+            experience_text = sections["experience"]
+            inferred_skills.extend(self.extract_skills_from_text(experience_text))
+        
+        # Extract from projects section
+        if "projects" in sections:
+            projects_text = sections["projects"]
+            inferred_skills.extend(self.extract_skills_from_text(projects_text))
+        
+        # Remove duplicates and normalize
+        inferred_skills = list(set(skill.lower() for skill in inferred_skills))
+        
+        print(f"Total inferred skills: {len(inferred_skills)}")
+        
+        # Calculate overall score - simple version
+        overall_score = min(1.0, len(inferred_skills) / 20)  # Normalize based on typical skill count
+        
+        return {
+            "sections": sections,
+            "inferred_skills": inferred_skills,
+            "overall_cv_score": overall_score
+        }
 
 def main():
     # Path to your service account credentials JSON file

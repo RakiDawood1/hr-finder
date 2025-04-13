@@ -317,97 +317,15 @@ class AutoGenTalentMatcher:
 
     def _extract_cv_sections(self, cv_content: str) -> Dict[str, str]:
         """Extract different sections from CV content with improved pattern matching."""
-        if not cv_content:
-            print("Warning: CV content is empty for section extraction")
-            return {"experience": cv_content}
-        
-        cv_lower = cv_content.lower()
-        sections = {}
-        
-        # Define comprehensive section headers with more flexible patterns
-        section_patterns = {
-            "education": [
-                r'education[\s]*:?',
-                r'academic[\s]*background[\s]*:?',
-                r'qualifications[\s]*:?',
-                r'education\s+and\s+training[\s]*:?',
-                r'educational\s+background[\s]*:?',
-                r'degree',
-                r'education\s+history',
-                r'educational\s+qualifications',
-                r'certifications?[\s]*:?',
-                r'training[\s]*:?'
-            ],
-            "experience": [
-                r'experience[\s]*:?',
-                r'work[\s]*history[\s]*:?',
-                r'employment[\s]*history[\s]*:?',
-                r'professional[\s]*experience[\s]*:?',
-                r'work\s+experience',
-                r'employment\s+background',
-                r'career\s+history',
-                r'professional\s+background',
-                r'work\s+history',
-                r'employment\s+experience'
-            ],
-            "skills": [
-                r'skills[\s]*:?',
-                r'technical[\s]*skills[\s]*:?',
-                r'core[\s]*competencies[\s]*:?',
-                r'key[\s]*skills[\s]*:?',
-                r'professional[\s]*skills[\s]*:?',
-                r'expertise',
-                r'competencies',
-                r'technical\s+expertise',
-                r'areas\s+of\s+expertise',
-                r'professional\s+competencies'
-            ],
-            "projects": [
-                r'projects[\s]*:?',
-                r'key[\s]*projects[\s]*:?',
-                r'selected[\s]*projects[\s]*:?',
-                r'project\s+experience',
-                r'project\s+history',
-                r'notable\s+projects',
-                r'achievements',
-                r'key\s+achievements',
-                r'notable\s+achievements',
-                r'project\s+portfolio'
-            ],
-            "summary": [
-                r'summary[\s]*:?',
-                r'profile[\s]*:?',
-                r'professional\s+summary[\s]*:?',
-                r'career\s+summary[\s]*:?',
-                r'executive\s+summary[\s]*:?',
-                r'overview[\s]*:?',
-                r'introduction[\s]*:?'
-            ]
-        }
-        
-        # Find all section headers and their positions
-        section_positions = []
-        for section_name, patterns in section_patterns.items():
-            for pattern in patterns:
-                for match in re.finditer(pattern, cv_lower):
-                    section_positions.append((match.start(), section_name))
-        
-        # Sort sections by position
-        section_positions.sort(key=lambda x: x[0])
-        
-        # Extract content between sections
-        for i, (start_pos, section_name) in enumerate(section_positions):
-            if i < len(section_positions) - 1:
-                next_start = section_positions[i + 1][0]
-                sections[section_name] = cv_content[start_pos:next_start].strip()
-            else:
-                sections[section_name] = cv_content[start_pos:].strip()
-        
-        # If no sections found, treat entire content as experience
-        if not sections:
-            sections["experience"] = cv_content
-        
-        return sections
+        # Use method from TalentMatchingTool instead
+        return self.tool.extract_cv_sections(cv_content)
+
+    def _extract_skills_from_text(self, text: str) -> List[str]:
+        """Extract skills from text using multiple patterns, focusing on data science.
+        Now the primary source for candidate skills.
+        """
+        # Use method from TalentMatchingTool instead
+        return self.tool.extract_skills_from_text(text)
 
     def _analyze_cv_content(self, cv_content: str, role_expertise: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze CV content against role expertise requirements with enhanced context analysis."""
@@ -425,8 +343,12 @@ class AutoGenTalentMatcher:
         
         print(f"\nAnalyzing CV content ({len(cv_content)} characters)...")
         
-        # Preprocess and section the CV
-        sections = self._extract_cv_sections(cv_content)
+        # Get basic CV analysis from TalentMatchingTool 
+        basic_cv_analysis = self.tool.analyze_cv_content(cv_content)
+        
+        # Extract sections and skills from the tool's analysis
+        sections = basic_cv_analysis.get("sections", {})
+        inferred_skills = basic_cv_analysis.get("inferred_skills", [])
         
         if not sections:
             print("Warning: No sections could be extracted from CV content")
@@ -438,25 +360,17 @@ class AutoGenTalentMatcher:
                 "overall_cv_score": 0.0
             }
         
-        # Extract skills and qualities from different sections
-        inferred_skills = []
+        # Extract qualities from different sections
         inferred_qualities = []
-        
-        # Extract from skills section
-        if "skills" in sections:
-            skills_text = sections["skills"]
-            inferred_skills.extend(self._extract_skills_from_text(skills_text))
         
         # Extract from experience section
         if "experience" in sections:
             experience_text = sections["experience"]
-            inferred_skills.extend(self._extract_skills_from_text(experience_text))
             inferred_qualities.extend(self._extract_qualities_from_experience(experience_text))
         
         # Extract from projects section
         if "projects" in sections:
             projects_text = sections["projects"]
-            inferred_skills.extend(self._extract_skills_from_text(projects_text))
             inferred_qualities.extend(self._extract_qualities_from_projects(projects_text))
         
         # Extract from summary section
@@ -465,7 +379,6 @@ class AutoGenTalentMatcher:
             inferred_qualities.extend(self._extract_qualities_from_summary(summary_text))
         
         # Remove duplicates and normalize
-        inferred_skills = list(set(skill.lower() for skill in inferred_skills))
         inferred_qualities = list(set(quality.lower() for quality in inferred_qualities))
         
         print(f"Total inferred skills: {len(inferred_skills)}")
@@ -488,88 +401,6 @@ class AutoGenTalentMatcher:
             "inferred_qualities": inferred_qualities,
             "overall_cv_score": evidence_results["overall_score"]
         }
-
-    def _extract_skills_from_text(self, text: str) -> List[str]:
-        """Extract skills from text using multiple patterns, focusing on data science.
-        Now the primary source for candidate skills.
-        """
-        skills = set()
-        text_lower = text.lower()
-        
-        # Define more comprehensive skill patterns, especially for data science
-        skill_patterns = [
-            # Programming Languages & Core Libraries
-            r'\b(python|r|sql|java|scala|c\+\+|julia)\b',
-            r'\b(pandas|numpy|scipy|scikit-learn|sklearn|matplotlib|seaborn|plotly)\b',
-            r'\b(tensorflow|keras|pytorch|theano|caffe|mxnet|jax)\b',
-            r'\b(nltk|spacy|gensim|transformers)\b', # NLP
-            r'\b(opencv|pillow)\b', # Computer Vision
-            
-            # Databases & Data Warehousing
-            r'\b(sql|mysql|postgresql|postgres|sqlite|sql server|tsql|pl/sql|oracle|mongodb|cassandra|redis|neo4j)\b',
-            r'\b(bigquery|redshift|snowflake|teradata|hive|presto|spark sql)\b',
-            
-            # Big Data & Distributed Computing
-            r'\b(spark|pyspark|hadoop|hdfs|mapreduce|kafka|flink|storm)\b',
-            
-            # Cloud Platforms
-            r'\b(aws|azure|gcp|google cloud|amazon web services)\b',
-            r'\b(sagemaker|azure ml|google ai platform|databricks|kubernetes|docker)\b',
-            
-            # ML/AI Concepts & Techniques
-            r'\b(machine learning|ml|deep learning|dl|artificial intelligence|ai)\b',
-            r'\b(natural language processing|nlp|computer vision|cv|reinforcement learning|rl)\b',
-            r'\b(regression|classification|clustering|dimensionality reduction|feature engineering)\b',
-            r'\b(neural networks?|cnn|rnn|lstm|transformer[s]?)\b',
-            r'\b(gradient boosting|xgboost|lightgbm|catboost|random forest|svm|decision tree[s]?)\b',
-            r'\b(a/b testing|experimentation|statistical modeling|statistics|probability)\b',
-            
-            # BI & Visualization Tools
-            r'\b(tableau|power bi|powerbi|qlik|looker|d3.js|ggplot2)\b',
-            
-            # General Software Engineering
-            r'\b(git|linux|bash|shell scripting|api[s]?|rest api)\b'
-        ]
-        
-        # Contextual patterns (e.g., "experience with Python")
-        context_patterns = [
-            r'(?:proficient in|expert in|skilled in|experience with|knowledge of|working with|using)\s+((?:\b\w+\b[\s,]*){1,4})',
-            r'(?:skills?|expertise|competencies?)\s*[:\-]?\s*((?:\b\w+\b[\s,]*){1,10})'
-        ]
-
-        # Direct keyword matching
-        for pattern in skill_patterns:
-            matches = re.findall(pattern, text_lower)
-            for match in matches:
-                skills.add(match.strip())
-
-        # Contextual matching
-        for pattern in context_patterns:
-            matches = re.findall(pattern, text_lower)
-            for match_group in matches:
-                # Potential skills are within the matched group
-                potential_skills = match_group.split(',')
-                for ps in potential_skills:
-                    ps_clean = ps.strip()
-                    if len(ps_clean) > 1: # Avoid single letters
-                        # Check if the potential skill matches any known patterns directly
-                        for skill_pattern in skill_patterns:
-                            if re.search(skill_pattern, ps_clean):
-                                skills.add(ps_clean)
-                                break # Add once per potential skill
-                        # Basic check for likely skills (e.g., alphanumeric, possibly with ., +, #)
-                        if re.match(r'^[a-z0-9\.\+\#\s\-/]+$', ps_clean) and len(ps_clean) <= 30:
-                             skills.add(ps_clean) # Add plausible skills even if not in specific list
-                             
-        # Clean up common non-skill words often caught by context patterns
-        non_skills = {"various", "multiple", "different", "tools", "technologies", "languages", "concepts", "methods", "techniques", "including", "such as"}
-        skills = {s for s in skills if s not in non_skills and len(s) > 1} # Remove single letters/short strings
-                             
-        print(f"Extracted {len(skills)} unique skills from text.")
-        if self.debug and skills:
-             logger.debug(f"Sample extracted skills: {list(skills)[:10]}")
-        
-        return list(skills)
 
     def _extract_qualities_from_experience(self, text: str) -> List[str]:
         """Extract important qualities from experience section."""
@@ -922,17 +753,24 @@ class AutoGenTalentMatcher:
             self._store_cv_analysis(candidate, cv_analysis)
             return cv_analysis
         
+        # First get basic CV analysis from the tool
+        basic_cv_analysis = self.tool.analyze_cv_content(cv_content)
+        
+        # Then use our more advanced _analyze_cv_content for detailed role-specific analysis
         cv_analysis = self._analyze_cv_content(cv_content, role_expertise)
         
+        # Combine the analyses
+        combined_analysis = {**basic_cv_analysis, **cv_analysis}
+        
         # Store the analysis in the candidate
-        self._store_cv_analysis(candidate, cv_analysis)
+        self._store_cv_analysis(candidate, combined_analysis)
         
         if self.debug:
             logger.debug(f"CV Analysis Results:")
-            logger.debug(f"Evidence found: {cv_analysis.get('evidence_found', [])}")
-            logger.debug(f"Overall score: {cv_analysis.get('overall_cv_score', 0)}")
+            logger.debug(f"Evidence found: {combined_analysis.get('evidence_found', [])}")
+            logger.debug(f"Overall score: {combined_analysis.get('overall_cv_score', 0)}")
         
-        return cv_analysis
+        return combined_analysis
         
     def _store_cv_analysis(self, candidate, cv_analysis: Dict[str, Any]) -> None:
         """Helper method to store CV analysis appropriately based on candidate type."""
@@ -1023,25 +861,21 @@ class AutoGenTalentMatcher:
                     logger.info(f"  Skipping {candidate.name} due to insufficient experience ({candidate_exp} < {min_exp})")
                     continue
             
-            # --- Fetch CV Content if needed --- 
-            if candidate.cv_link and not candidate.cv_content:
-                 logger.debug(f"Fetching CV content for {candidate.name} from {candidate.cv_link}")
-                 try:
-                     # Use the tool instance provided during initialization
-                     fetched_content = self.tool.extract_cv_content(candidate.cv_link)
-                     candidate.cv_content = fetched_content if fetched_content else ""
-                     if not candidate.cv_content:
-                         logger.warning(f"CV content extraction failed or returned empty for {candidate.name}")
-                 except Exception as e:
-                     logger.error(f"Error fetching CV content for {candidate.name}: {e}")
-                     candidate.cv_content = "" # Ensure it's a string even on error
-            elif not candidate.cv_link:
-                 logger.debug(f"No CV link for {candidate.name}, setting CV content to empty string.")
-                 candidate.cv_content = ""
-            else:
-                 logger.debug(f"CV content already present for {candidate.name}")
-            # ---------------------------------
-
+            # --- CRITICAL FIX: Always attempt to fetch CV content ---
+            if not candidate.cv_content and candidate.cv_link:
+                logger.info(f"Fetching CV content for {candidate.name} from link: {candidate.cv_link}")
+                try:
+                    fetched_content = self.tool.extract_cv_content(candidate.cv_link)
+                    if fetched_content:
+                        logger.info(f"Successfully fetched {len(fetched_content)} characters of CV content")
+                        candidate.cv_content = fetched_content
+                    else:
+                        logger.warning(f"Failed to extract content from CV link for {candidate.name}")
+                        candidate.cv_content = ""
+                except Exception as e:
+                    logger.error(f"Error fetching CV for {candidate.name}: {str(e)}")
+                    candidate.cv_content = ""
+            
             # Evaluate CV content
             cv_match = self._evaluate_candidate_cv(candidate, role_expertise)
             
@@ -1094,88 +928,62 @@ class AutoGenTalentMatcher:
 
     def _rank_candidates_with_detail(self, job: Dict[str, Any], filtered_candidates: List[MatchResult], 
                                    top_n: int = 10) -> List[Dict[str, Any]]:
-        """Rank candidates based on comprehensive evaluation."""
+        """Rank candidates based on comprehensive evaluation with improved scoring."""
         ranked_results = []
         
-        print(f"\nPerforming detailed ranking of {len(filtered_candidates)} candidates...")
-        
         for match_result in filtered_candidates:
-            # Extract candidate info from the match_result object properties
+            # Extract candidate details
             candidate_name = match_result.candidate_name
+            score = match_result.score
+            details = match_result.details
             
-            print(f"\nDetailed evaluation for candidate: {candidate_name}")
+            # FIXED: Scale score properly (0-1 to 0-100)
+            match_score = score * 100
             
-            # Create a temporary candidate dict from the stored values
-            candidate = {
-                "name": candidate_name,
-                "years_of_experience": 0,  # Will be set based on the actual data
-                "current_location": "",
-                "remote_preference": False,
-                "willing_to_relocate": False
-            }
+            # Get skill details
+            cv_score = details.get("cv_score", 0.1) * 100
+            skill_score = details.get("skill_score", 0.1) * 100
+            required_skills_matched = details.get("required_skills_matched", [])
+            required_skills_missing = details.get("required_skills_missing", [])
             
-            # Calculate skill matching details
-            skill_match_details = {}  # Will contain matched skills
+            # Calculate percentages
+            required_match_pct = 100 * len(required_skills_matched) / (len(required_skills_matched) + len(required_skills_missing)) if (len(required_skills_matched) + len(required_skills_missing)) > 0 else 0
             
-            # Get required and preferred skills
-            required_skills = {skill.get("name", "").lower() for skill in job.get("required_skills", [])}
-            preferred_skills = {skill.get("name", "").lower() for skill in job.get("preferred_skills", [])}
-            
-            # For demonstration, let's say all required skills match at this lower threshold
-            for skill in required_skills:
-                skill_match_details[skill] = True
-            
-            required_matched = len(required_skills)  # All match for now
-            preferred_matched = 0  # None match for now
-            
-            required_match_pct = (required_matched / len(required_skills) * 100) if required_skills else 100
-            preferred_match_pct = (preferred_matched / len(preferred_skills) * 100) if preferred_skills else 100
-            
-            print(f"  Required Skills: {required_matched}/{len(required_skills)} = {required_match_pct:.1f}%")
-            print(f"  Preferred Skills: {preferred_matched}/{len(preferred_skills)} = {preferred_match_pct:.1f}%")
-            
+            # Check experience match
             min_years = job.get("min_years_experience", 0) or 0
-            candidate_years = 3.0  # Default to minimum
+            candidate_years = details.get("years_of_experience", 3.0)  # Default if not available
             experience_match = candidate_years >= min_years
             
-            print(f"  Experience: {candidate_years} years vs. required {min_years} = {experience_match}")
+            # Generate explanation
+            explanation = f"Candidate {candidate_name} has a {match_score:.1f}% match. "
+            if required_skills_matched:
+                explanation += f"Matches {len(required_skills_matched)} required skills: {', '.join(required_skills_matched[:3])}"
+                if len(required_skills_matched) > 3:
+                    explanation += f" and {len(required_skills_matched)-3} more. "
+                else:
+                    explanation += ". "
             
-            location_match = False
-            if job.get("remote_friendly"):
-                location_match = True
+            if experience_match:
+                explanation += f"Has {candidate_years} years of experience (requirement: {min_years})."
             
-            print(f"  Location Match: {location_match}")
-            
-            # Calculate match score (simplified for debugging)
-            match_score = match_result.score * 100  # Convert to 0-100 scale
-            
-            print(f"  Final Match Score: {match_score:.1f}")
-            
-            explanation = f"Candidate {candidate_name} has a {match_score:.1f}% match with required skills and experience."
+            if required_skills_missing:
+                explanation += f" Missing skills: {', '.join(required_skills_missing)}."
             
             result = {
-                "candidate": candidate,
                 "name": candidate_name,
                 "match_score": match_score,
                 "required_skills_matched": f"{required_match_pct:.1f}%",
-                "preferred_skills_matched": f"{preferred_match_pct:.1f}%",
-                "skill_match_details": skill_match_details,
                 "experience_match": "Yes" if experience_match else "No",
-                "location_match": "Yes" if location_match else "No",
+                "location_match": "Unknown",  # Would need location data to determine
                 "explanation": explanation
             }
             
             ranked_results.append(result)
         
+        # Sort by score descending
         ranked_results.sort(key=lambda x: x["match_score"], reverse=True)
-        top_results = ranked_results[:top_n]
         
-        print("\nFinal Candidate Ranking:")
-        for i, result in enumerate(top_results, 1):
-            print(f"  {i}. {result['name']} - Score: {result['match_score']:.1f}")
-            print(f"     {result['explanation']}")
-        
-        return top_results
+        return ranked_results[:top_n]
     
     def _evaluate_candidates_for_job(self, job: Dict[str, Any], candidates: List[Dict[str, Any]], 
                                    top_n: int = 10, min_threshold: float = 0.3) -> Dict[str, Any]:

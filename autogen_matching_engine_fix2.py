@@ -259,6 +259,94 @@ class AutoGenMatchingEngine:
             
         return results
 
+    def _filter_candidates(self, job: Dict[str, Any], candidates: List[CandidateProfile], 
+                           min_match_threshold: float = 0.5) -> List[MatchResult]:
+        """Filter candidates based on detailed criteria including experience and CV analysis."""
+        logger.info(f"Performing detailed analysis on {len(candidates)} candidates")
+        matched_candidates = []
+        
+        # Define role expertise based on job details
+        role_expertise = self._research_role_requirements(
+            job.get("title", ""),
+            job.get("important_qualities", "")
+        )
+
+        for candidate in candidates:
+            logger.debug(f"\nEvaluating candidate: {candidate.name} (Row: {getattr(candidate, 'row_number', 'N/A')})")
+            
+            # Basic experience check (if required)
+            min_exp = job.get("min_years_experience", 0) or 0
+            candidate_exp = candidate.years_of_experience or 0
+            if min_exp > 0 and candidate_exp < min_exp:
+                logger.info(f"  Skipping {candidate.name} due to insufficient experience ({candidate_exp} < {min_exp})")
+                continue
+            
+            # Evaluate CV content
+            cv_analysis = self._evaluate_candidate_cv(candidate, role_expertise)
+            overall_score = self._calculate_overall_score(cv_analysis, candidate)
+
+            if overall_score >= min_match_threshold:
+                matched_candidates.append(MatchResult(
+                    candidate_id=candidate.candidate_id,
+                    candidate_name=candidate.name,
+                    score=overall_score,
+                    details=cv_analysis,
+                    row_number=getattr(candidate, 'row_number', None) # Include row number
+                ))
+            else:
+                logger.info(f"  Candidate {candidate.name} did not meet threshold ({overall_score:.2f} < {min_match_threshold}) ")
+        
+        # Sort by score descending
+        matched_candidates.sort(key=lambda x: x.score, reverse=True)
+        
+        return matched_candidates
+
+    def _calculate_overall_score(self, cv_analysis: Dict[str, Any], candidate: CandidateProfile) -> float:
+        """Calculate overall score based on CV analysis and candidate details."""
+        cv_score = cv_analysis.get("overall_cv_score", 0.1)
+        skill_score = self._evaluate_skills_match(candidate, cv_analysis.get("inferred_skills", []))
+        
+        return (cv_score * 0.6) + (skill_score * 0.4)
+
+    def match_candidates_to_job(self, job: JobRequirement, all_candidates: List[CandidateProfile],
+                              min_match_threshold: float = 0.3, top_n: int = 10) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Match candidates to a job using the enhanced two-stage filtering framework."""
+        logger.info(f"Starting candidate matching process for job: {job.title}")
+        
+        job_dict = job.model_dump()
+        candidate_dicts = [c.model_dump() for c in all_candidates]
+        
+        # STAGE 1: Job Preference Filtering (Coordinator Agent)
+        logger.info(f"Performing job preference filtering on {len(all_candidates)} candidates")
+        print("\n" + "="*80)
+        print(f"TALENT MATCHING PROCESS: {job.title}")
+        print("="*80)
+
+        # First filter by job preference (using original objects)
+        job_preference_filtered = self._filter_candidates_by_job_preference(job_dict, all_candidates)
+
+        # STAGE 2: Detailed evaluation with CV analysis (only on job preference filtered candidates)
+        try:
+            logger.info(f"Performing detailed analysis on {len(job_preference_filtered)} job preference filtered candidates")
+            print("\nSTAGE 2: HR MANAGER AGENT - DETAILED CANDIDATE EVALUATION")
+            print("-"*80)
+
+            # Apply second-stage filtering and full analysis only to candidates passing first filter
+            filtered_candidates = self._filter_candidates(job_dict, job_preference_filtered, min_match_threshold)
+
+            # Get final rankings with detailed explanations
+            match_results = self._rank_candidates_with_detail(job_dict, filtered_candidates, top_n)
+
+            logger.info(f"Successfully matched and ranked {len(match_results)} candidates")
+            print(f"\nSuccessfully matched and ranked {len(match_results)} candidates")
+
+        except Exception as e:
+            logger.error(f"Error during detailed matching process: {str(e)}")
+            import traceback
+            logger.error(f"Stack trace: {traceback.format_exc()}")
+            return [], []
+        
+        return match_results, []
 
 def main():
     """Example usage of the AutoGen matching engine."""

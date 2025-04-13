@@ -70,30 +70,29 @@ def parse_job_to_model(job_data: Dict[str, Any]) -> JobRequirement:
     return job_model
 
 
-def parse_candidate_to_model(candidate_data: Dict[str, Any], cv_content: Optional[str] = None) -> CandidateProfile:
+def parse_candidate_to_model(candidate_data: Dict[str, Any], cv_content: Optional[str] = None, row_number: Optional[int] = None) -> CandidateProfile:
     """
     Convert raw candidate data from Google Sheets into a validated CandidateProfile model.
     
     Args:
         candidate_data: Dictionary containing raw candidate data from Google Sheets
         cv_content: Optional text content extracted from the candidate's CV
+        row_number: Optional row number for reference
         
     Returns:
         CandidateProfile: A validated candidate profile model
     """
-    print("\nDEBUG: Parsing candidate to model")
-    print("-" * 50)
+    # Use CV content from arguments if provided, otherwise use from data
+    if cv_content is not None:
+        candidate_data["cv_content"] = cv_content
     
-    # Extract basic candidate details
+    # Extract name or use default if not present
     full_name = (candidate_data.get('name', candidate_data.get('Name', candidate_data.get('FullName', 
                                     candidate_data.get('Full Name', '')))))
     
-    # Debug the full name value
-    print(f"Name field value before processing: '{full_name}'")
-    
     # Ensure name is not empty
     if not full_name:
-        full_name = f"Candidate-{candidate_data.get('row_number', 'Unknown')}"
+        full_name = f"Candidate-{row_number or candidate_data.get('row_number', 'Unknown')}"
     
     print(f"Processing candidate: {full_name}")
     print(f"CV content length: {len(cv_content) if cv_content else 0}")
@@ -104,6 +103,23 @@ def parse_candidate_to_model(candidate_data: Dict[str, Any], cv_content: Optiona
         print(cv_content[:100])
         print("-" * 30)
     
+    # Process skills
+    skills_text = candidate_data.get('Skills', candidate_data.get('skills', ''))
+    skills = []
+    
+    # Handle different formats of skills data
+    if isinstance(skills_text, list):
+        # If skills is already a list (might be a list of skill objects or strings)
+        skills = skills_text
+    elif skills_text:
+        # If skills is a string, parse it
+        try:
+            skills = _parse_skills(skills_text)
+        except Exception as e:
+            print(f"Warning: Error parsing skills text '{skills_text}': {e}")
+            skills = []  # Fallback to empty list
+    
+    # Build basic model, including row_number
     candidate_model = CandidateProfile(
         candidate_id=candidate_data.get('CandidateID', candidate_data.get('Candidate ID', None)),
         name=full_name,
@@ -117,19 +133,16 @@ def parse_candidate_to_model(candidate_data: Dict[str, Any], cv_content: Optiona
                                            candidate_data.get('Willing To Relocate', 'No'))),
         remote_preference=_parse_boolean(candidate_data.get('RemotePreference', 
                                          candidate_data.get('Remote Preference', 'No'))),
-        cv_content=cv_content,  # Direct assignment of CV content
+        cv_content=candidate_data.get('cv_content', ''),
         cv_link=candidate_data.get('CV', candidate_data.get('Resume', 
                                    candidate_data.get('CVLink', candidate_data.get('CV Link', None)))),
-        jobs_applying_for=candidate_data.get('jobs_applying_for', candidate_data.get('position_preference', None))
+        jobs_applying_for=candidate_data.get('jobs_applying_for', candidate_data.get('position_preference', None)),
+        skills=skills,
+        row_number=row_number
     )
     
     # Verify CV content was properly set
     print(f"Model CV content length: {len(candidate_model.cv_content) if candidate_model.cv_content else 0}")
-    
-    # Parse skills
-    skills_text = candidate_data.get('Skills', '')
-    candidate_model.skills = _parse_skills(skills_text)
-    print(f"Parsed {len(candidate_model.skills)} skills")
     
     # Parse years of experience
     years_exp_text = candidate_data.get('years_of_experience', candidate_data.get('YearsExperience', candidate_data.get('Years Experience', 

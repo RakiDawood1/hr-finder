@@ -107,6 +107,7 @@ class CandidateProfile(BaseModel):
     cv_content: Optional[str] = None
     cv_link: Optional[str] = None
     jobs_applying_for: Optional[str] = None
+    row_number: Optional[int] = None
     
     class Config:
         validate_assignment = True
