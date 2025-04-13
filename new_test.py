@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from talent_matching_tool_fix2 import TalentMatchingTool
 from autogen_matching_engine_fix2 import AutoGenMatchingEngine
 import logging
+from typing import Dict, Any, List
 
 def test_matching_for_job(job_row):
     """Test the matching process for a specific job row."""
@@ -59,7 +60,7 @@ def test_matching_for_job(job_row):
     print("\nRunning matching process...")
     result = engine.match_job_to_candidates(
         job_row=job_row,
-        min_match_threshold=0.3,
+        min_match_threshold=0.1,
         top_n=5
     )
     

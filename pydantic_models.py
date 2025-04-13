@@ -123,17 +123,11 @@ class CandidateProfile(BaseModel):
 
 class MatchResult(BaseModel):
     """Model for representing a job-candidate match result."""
-    job: JobRequirement
-    candidate: CandidateProfile
-    match_score: float = Field(..., ge=0, le=100)
-    skill_match_details: Dict[str, bool] = {}
-    required_skill_match_percentage: float = Field(..., ge=0, le=100)
-    preferred_skill_match_percentage: float = Field(..., ge=0, le=100)
-    education_match: bool = False
-    experience_match: bool = False
-    location_match: bool = False
-    cv_analysis: Optional[CVAnalysis] = None  # Added for enhanced CV analysis
-    match_explanation: Optional[str] = None
+    candidate_id: Optional[str] = None
+    candidate_name: str
+    score: float = Field(..., ge=0, le=1)
+    details: Dict[str, Any] = {}
+    row_number: Optional[int] = None
     
     class Config:
         validate_assignment = True

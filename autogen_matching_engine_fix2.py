@@ -55,6 +55,7 @@ class AutoGenMatchingEngine:
         self.verbose = verbose
         self.debug = debug
         self.matcher = AutoGenTalentMatcher(
+            tool=tool,
             config_list=config_list, 
             verbose=verbose, 
             use_gemini=use_gemini,
@@ -77,7 +78,9 @@ class AutoGenMatchingEngine:
         top_n: int = 10
     ) -> Dict[str, Any]:
         """
-        Match a job to suitable candidates using the enhanced matching process.
+        Match a job to suitable candidates using a two-stage filtering process:
+        1. First filtering by job preference (Column F)
+        2. Then detailed analysis only on pre-filtered candidates
         
         Args:
             job_row: Row number of the job in the Jobs Sheet
@@ -128,17 +131,32 @@ class AutoGenMatchingEngine:
         
         logger.info(f"Retrieved {len(all_candidates)} candidate profiles")
         
-        # Step 3: Use our enhanced matching framework
+        # Step 3: First stage - Filter by job preference (Column F)
         try:
             # Print banner for improved visibility
             print("\n" + "="*80)
             print(f"TALENT MATCHING PROCESS: {job_model.title}")
             print("="*80)
             
-            # Match candidates to job
+            # Get job preference from Column F
+            job_preference = job_model.job_preference if hasattr(job_model, 'job_preference') else None
+            
+            # Filter candidates by job preference
+            pre_filtered_candidates = []
+            if job_preference:
+                logger.info(f"Filtering candidates by job preference: {job_preference}")
+                for candidate in all_candidates:
+                    if hasattr(candidate, 'preferred_job_types') and job_preference in candidate.preferred_job_types:
+                        pre_filtered_candidates.append(candidate)
+                logger.info(f"Pre-filtered {len(pre_filtered_candidates)} candidates by job preference")
+            else:
+                logger.info("No job preference specified, using all candidates")
+                pre_filtered_candidates = all_candidates
+            
+            # Step 4: Second stage - Detailed analysis on pre-filtered candidates
             match_results, _ = self.matcher.match_candidates_to_job(
                 job_model,
-                all_candidates,
+                pre_filtered_candidates,
                 min_match_threshold,
                 top_n
             )
@@ -157,18 +175,19 @@ class AutoGenMatchingEngine:
                 "job_title": job_model.title
             }
         
-        # Step 4: Retrieve original row numbers for matched candidates
+        # Step 5: Retrieve original row numbers for matched candidates
         matched_candidates_with_rows = self._get_row_numbers_for_matched_candidates(match_results)
         
         end_time = datetime.now()
         execution_time = (end_time - start_time).total_seconds()
         
-        # Step 5: Prepare result
+        # Step 6: Prepare result
         result = {
             "success": True,
             "job_row": job_row,
             "job_title": job_model.title,
             "total_candidates": len(all_candidates),
+            "pre_filtered_candidates": len(pre_filtered_candidates),
             "matched_candidates": len(match_results),
             "execution_time_seconds": execution_time,
             "matches": matched_candidates_with_rows,

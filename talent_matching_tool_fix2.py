@@ -130,7 +130,6 @@ class TalentMatchingTool:
         # Find key column indices
         indices = {
             'name': next((i for i, h in enumerate(headers) if h and "Name" in h), 0),
-            'skills': next((i for i, h in enumerate(headers) if h and "Skills" in h), 3),
             'experience': next((i for i, h in enumerate(headers) if h and "Experience" in h), 6),
             'position': next((i for i, h in enumerate(headers) if h and "Position" in h), 5),
             'job_preference': next((i for i, h in enumerate(headers) if h and ("Applying" in h or "Job" in h and "Looking" in h)), 5),
@@ -729,7 +728,7 @@ class TalentMatchingTool:
             print(f"Warning: Error while enhancing talent data: {e}")
             
         try:
-            model = parse_candidate_to_model(talent_dict, cv_content)
+            model = parse_candidate_to_model(talent_dict, cv_content=cv_content, row_number=row_number)
             if model.years_of_experience is None or model.years_of_experience == 0:
                 # Double-check the years_of_experience
                 years_exp = talent_dict.get("YearsExperience") or talent_dict.get("years_of_experience")
@@ -741,123 +740,101 @@ class TalentMatchingTool:
             print(f"Error parsing candidate to model: {e}")
             return None
     
-    def process_all_talents_with_cvs(self) -> List[Tuple[Dict[str, Any], str]]:
-        """
-        Process all talents and their CVs.
-        
-        Returns:
-            A list of tuples, each containing talent details and CV content
-        """
-        talents_df = self.get_all_talents()
-        results = []
-        
-        # Get CV column name
-        cv_column_name = talents_df.columns[self.cv_column_index] if self.cv_column_index < len(talents_df.columns) else None
-        
-        if not cv_column_name:
-            print(f"Warning: CV column index {self.cv_column_index} is out of range.")
-            return []
-        
-        # Process each talent
-        for index, row in talents_df.iterrows():
-            talent_dict = row.to_dict()
-            cv_link = row.get(cv_column_name, "")
-            cv_content = self.get_cv_content(cv_link) if cv_link else "No CV link provided."
-            results.append((talent_dict, cv_content))
-            
-        return results
-    
     def get_all_talent_models(self) -> List[CandidateProfile]:
-        """
-        Process all talents and convert them to validated Pydantic models.
-        
-        Returns:
-            A list of validated CandidateProfile models
-        """
-        # Get the raw sheet data for enhanced parsing
-        result = self.sheets_service.spreadsheets().values().get(
-            spreadsheetId=self.talents_sheet_id,
-            range=self.talents_range
-        ).execute()
-        
-        values = result.get('values', [])
-        headers = values[0] if values else []
-        
-        print("\nDEBUG: Processing talent models")
-        print("-" * 50)
-        print(f"Found {len(values)-1} candidates in sheet")
-        print(f"CV column index: {self.cv_column_index}")
-        
-        # Process all talents with enhanced approach
-        talent_models = []
-        
-        for i, row_data in enumerate(values[1:], 1):  # Skip header row
-            try:
-                # Create base talent dictionary from row data
-                talent_dict = {}
-                for j, header in enumerate(headers):
-                    if j < len(row_data):
-                        talent_dict[header] = row_data[j]
-                    else:
-                        talent_dict[header] = ""
-                
-                # Add row number for reference
-                row_number = i + 1  # +1 because we skipped header and i is 0-based
-                talent_dict["row_number"] = row_number
-                
-                # Get CV link and content
-                cv_link = row_data[self.cv_column_index] if self.cv_column_index < len(row_data) else ""
-                
-                print(f"\nProcessing candidate {row_number}:")
-                print(f"Name: {talent_dict.get('Name', 'Unknown')}")
-                print(f"CV Link: {cv_link}")
-                
-                if cv_link:
-                    print("Extracting CV content...")
-                    cv_content = self.extract_cv_content(cv_link)
-                    print(f"Extracted CV content length: {len(cv_content)}")
-                    # Debug first part of content
-                    if cv_content:
-                        print("First 100 characters of CV:")
-                        print("-" * 30)
-                        print(cv_content[:100])
-                        print("-" * 30)
-                else:
-                    cv_content = "No CV link provided."
-                    print("No CV link available")
-                
-                # Enhance the talent data using raw sheet data
-                talent_dict = self._enhance_talent_from_sheet(talent_dict, row_data, headers)
-                
-                # Parse to model
-                model = parse_candidate_to_model(talent_dict, cv_content)
-                
-                # Double-check the model CV content
-                model_cv_len = len(model.cv_content) if model.cv_content else 0
-                print(f"Model CV content length: {model_cv_len}")
-                
-                # Double-check years of experience
-                if model.years_of_experience is None or model.years_of_experience == 0:
-                    years_exp = talent_dict.get("YearsExperience") or talent_dict.get("years_of_experience")
-                    if years_exp:
-                        model.years_of_experience = float(years_exp)
-                        print(f"Fixed years of experience for {model.name}: {model.years_of_experience}")
-                
-                talent_models.append(model)
-                
-            except Exception as e:
-                print(f"Error processing candidate at row {i+1}: {str(e)}")
-                import traceback
-                print(f"Stack trace: {traceback.format_exc()}")
-                continue
-        
-        # Final check of models
-        print(f"\nProcessed {len(talent_models)} candidates successfully")
-        for model in talent_models:
-            cv_len = len(model.cv_content) if model.cv_content else 0
-            print(f"  - {model.name}: CV length = {cv_len} chars")
-        
-        return talent_models
+        """Retrieve all talent data and parse into CandidateProfile models."""
+        try:
+            result = self.sheets_service.spreadsheets().values().get(
+                spreadsheetId=self.talents_sheet_id,
+                range=self.talents_range
+            ).execute()
+            
+            values = result.get('values', [])
+            
+            if not values or len(values) < 2:
+                print("Warning: No talent data found or only headers.")
+                return []
+            
+            headers = values[0]
+            talent_data = values[1:]
+            
+            col_indices = self._get_talents_column_indices()
+            
+            print("\nDEBUG: Processing talent models (without upfront CV fetch)")
+            print("--------------------------------------------------")
+            print(f"Found {len(talent_data)} candidates in sheet")
+            print(f"CV column index: {col_indices['cv']}")
+            
+            talent_models = []
+            for i, row in enumerate(talent_data):
+                row_number = i + 2  # Sheet rows are 1-indexed, data starts at row 2
+                try:
+                    print(f"\nProcessing candidate {row_number}: {row[col_indices['name']] if len(row) > col_indices['name'] else 'Unknown'}")
+                    
+                    # Prepare data dictionary from the row
+                    talent_dict = {}
+                    for idx, header in enumerate(headers):
+                        if idx < len(row):
+                            talent_dict[header] = row[idx]
+                        else:
+                            talent_dict[header] = "" # Handle rows with fewer columns than headers
+                    
+                    # Get CV link if available
+                    cv_link = row[col_indices['cv']] if len(row) > col_indices['cv'] else None
+                    if cv_link:
+                        print(f"CV Link stored: {cv_link}")
+                    
+                    # Prepare data for Pydantic model
+                    name_value = row[col_indices.get('name', 0)] if len(row) > col_indices.get('name', 0) else ""
+                    print(f"Name from sheet: '{name_value}'")  # Debug output to verify name
+                    
+                    candidate_data = {
+                        "name": name_value,
+                        # Initialize skills as empty; they will be populated by CV analysis later
+                        "skills": [], 
+                        "years_of_experience": row[col_indices.get('experience', 6)] if len(row) > col_indices.get('experience', 6) else 0,
+                        "current_title": row[col_indices.get('position', 5)] if len(row) > col_indices.get('position', 5) else "",
+                        "position_preference": row[col_indices.get('job_preference', 5)] if len(row) > col_indices.get('job_preference', 5) else "",
+                        "jobs_applying_for": row[col_indices.get('job_preference', 5)] if len(row) > col_indices.get('job_preference', 5) else "", # Use same column
+                        "current_location": row[col_indices.get('location', 4)] if len(row) > col_indices.get('location', 4) else "",
+                        "cv_link": cv_link,
+                        "row_number": row_number
+                        # Add other fields as needed, ensuring they exist in col_indices and row
+                    }
+
+                    # Debug: Print specific field assignments
+                    if len(row) > col_indices.get('experience', 6):
+                        print(f"Set experience for {candidate_data['name']}: {candidate_data['years_of_experience']}")
+                    if len(row) > col_indices.get('job_preference', 5):
+                        print(f"Set job preference for {candidate_data['name']}: '{candidate_data['position_preference']}'")
+
+                    print("\nDEBUG: Parsing candidate to model")
+                    print("--------------------------------------------------")
+                    
+                    # Parse and validate
+                    # Pass only candidate_data dict and cv_content=None
+                    candidate_model = parse_candidate_to_model(candidate_data, cv_content=None)
+                    
+                    if candidate_model:
+                        print(f"Processing candidate: {candidate_model.name}")
+                        print(f"CV content length: {len(candidate_model.cv_content) if candidate_model.cv_content else 0}")
+                        print(f"Years of experience: {candidate_model.years_of_experience}")
+                        talent_models.append(candidate_model)
+                except Exception as e:
+                    print(f"Error processing candidate at row {row_number}: {str(e)}")
+                    import traceback
+                    print(f"Stack trace: {traceback.format_exc()}")
+                    continue # Skip this candidate and move to the next
+                    
+            print(f"\nProcessed {len(talent_models)} candidate models (CV content fetch deferred)")
+            return talent_models
+        except HttpError as error:
+            print(f"An HTTP error occurred: {error}")
+            return []
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+            import traceback
+            print(f"Stack trace: {traceback.format_exc()}")
+            return []
 
 def main():
     # Path to your service account credentials JSON file

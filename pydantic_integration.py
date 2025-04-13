@@ -85,8 +85,15 @@ def parse_candidate_to_model(candidate_data: Dict[str, Any], cv_content: Optiona
     print("-" * 50)
     
     # Extract basic candidate details
-    full_name = (candidate_data.get('Name', candidate_data.get('FullName', 
-                                    candidate_data.get('Full Name', ''))))
+    full_name = (candidate_data.get('name', candidate_data.get('Name', candidate_data.get('FullName', 
+                                    candidate_data.get('Full Name', '')))))
+    
+    # Debug the full name value
+    print(f"Name field value before processing: '{full_name}'")
+    
+    # Ensure name is not empty
+    if not full_name:
+        full_name = f"Candidate-{candidate_data.get('row_number', 'Unknown')}"
     
     print(f"Processing candidate: {full_name}")
     print(f"CV content length: {len(cv_content) if cv_content else 0}")
@@ -112,7 +119,8 @@ def parse_candidate_to_model(candidate_data: Dict[str, Any], cv_content: Optiona
                                          candidate_data.get('Remote Preference', 'No'))),
         cv_content=cv_content,  # Direct assignment of CV content
         cv_link=candidate_data.get('CV', candidate_data.get('Resume', 
-                                   candidate_data.get('CVLink', candidate_data.get('CV Link', None))))
+                                   candidate_data.get('CVLink', candidate_data.get('CV Link', None)))),
+        jobs_applying_for=candidate_data.get('jobs_applying_for', candidate_data.get('position_preference', None))
     )
     
     # Verify CV content was properly set
@@ -124,16 +132,26 @@ def parse_candidate_to_model(candidate_data: Dict[str, Any], cv_content: Optiona
     print(f"Parsed {len(candidate_model.skills)} skills")
     
     # Parse years of experience
-    years_exp_text = candidate_data.get('YearsExperience', candidate_data.get('Years Experience', 
-                                        candidate_data.get('TotalExperience', candidate_data.get('Total Experience', '0'))))
-    candidate_model.years_of_experience = _extract_number(years_exp_text)
+    years_exp_text = candidate_data.get('years_of_experience', candidate_data.get('YearsExperience', candidate_data.get('Years Experience', 
+                                        candidate_data.get('TotalExperience', candidate_data.get('Total Experience', '0')))))
+    
+    # Convert years of experience to float, handling different input types
+    try:
+        if isinstance(years_exp_text, (int, float)):
+            candidate_model.years_of_experience = float(years_exp_text)
+        else:
+            candidate_model.years_of_experience = _extract_number(str(years_exp_text))
+    except (ValueError, TypeError):
+        candidate_model.years_of_experience = 0.0
+        
     print(f"Years of experience: {candidate_model.years_of_experience}")
     
     # If CV content is available, try to extract more information
-    if cv_content:
-        print("Enhancing model with CV content...")
-        candidate_model = _enhance_candidate_with_cv_content(candidate_model, cv_content)
-        print(f"Enhanced CV content length: {len(candidate_model.cv_content) if candidate_model.cv_content else 0}")
+    # REMOVED: CV enhancement logic is moved to the analysis stage
+    # if cv_content:
+    #     print("Enhancing model with CV content...")
+    #     candidate_model = _enhance_candidate_with_cv_content(candidate_model, cv_content)
+    #     print(f"Enhanced CV content length: {len(candidate_model.cv_content) if candidate_model.cv_content else 0}")
     
     return candidate_model
 
@@ -407,38 +425,3 @@ def _extract_responsibilities(description: str) -> List[str]:
             responsibilities = [point.strip() for point in bullet_points if point.strip()]
     
     return responsibilities
-
-
-def _enhance_candidate_with_cv_content(candidate: CandidateProfile, cv_content: str) -> CandidateProfile:
-    """
-    Enhance candidate profile with information extracted from CV content.
-    This is a simplified placeholder for what will be done with Gemini API in Phase 2.
-    
-    Args:
-        candidate: Existing candidate profile
-        cv_content: Text content of the CV
-        
-    Returns:
-        Enhanced candidate profile
-    """
-    # This is a very simple enhancement for demonstration
-    # In Phase 2, this will be replaced with Gemini API calls for advanced extraction
-    
-    # Look for additional skills not in the profile
-    # Common programming languages as an example
-    skill_keywords = [
-        "python", "java", "javascript", "typescript", "c#", "c++", "ruby", "php", 
-        "swift", "kotlin", "golang", "rust", "scala", "perl", "r", "sql",
-        "aws", "azure", "gcp", "docker", "kubernetes", "terraform",
-        "react", "angular", "vue", "django", "flask", "spring", "node",
-        "excel", "powerpoint", "word", "tableau", "power bi", "looker"
-    ]
-    
-    existing_skills = {skill.name.lower() for skill in candidate.skills}
-    
-    for keyword in skill_keywords:
-        # Simple regex to find whole word matches
-        if re.search(r'\b' + re.escape(keyword) + r'\b', cv_content.lower()) and keyword not in existing_skills:
-            candidate.skills.append(Skill(name=keyword))
-    
-    return candidate

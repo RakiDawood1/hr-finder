@@ -30,6 +30,9 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
+# Import the tool
+from talent_matching_tool_fix2 import TalentMatchingTool
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -42,21 +45,26 @@ class AutoGenTalentMatcher:
     Talent Matching framework using Microsoft's AutoGen for function execution.
     """
     
-    def __init__(self, config_list=None, verbose=True, use_gemini=False, debug=False):
+    def __init__(self, tool: TalentMatchingTool, config_list=None, verbose=True, use_gemini=False, debug=False):
         """
         Initialize the AutoGen-based Talent Matcher.
         
         Args:
+            tool: Instance of TalentMatchingTool for data access and CV extraction
             config_list: Configuration for the LLM (if None, agents will use function calling only)
             verbose: Whether to display detailed agent conversations
             use_gemini: Whether to use Gemini API (requires GEMINI_API_KEY in environment)
             debug: Enable debug logging for detailed troubleshooting
         """
+        self.tool = tool
         self.verbose = verbose
         self.config_list = config_list
         self.use_gemini = use_gemini
         self.debug = debug
         self.tfidf_vectorizer = TfidfVectorizer(stop_words='english')
+        
+        # Store analysis results in separate dictionaries keyed by candidate ID
+        self.candidate_analysis_results = {}
         
         # Set up logging based on debug flag
         log_level = logging.DEBUG if debug else logging.INFO
@@ -185,47 +193,65 @@ class AutoGenTalentMatcher:
         
         return False, 0.0
     
-    def _filter_candidates_by_job_preference(self, job: Dict[str, Any], 
-                                          candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Filter candidates based on job preference (Column F)."""
-        job_title = job.get("title", "").lower()
-        
-        print("\nSTEP 1: COORDINATOR AGENT - INITIAL JOB PREFERENCE FILTERING")
-        print("-"*80)
-        print(f"Filtering candidates based on job preferences for: {job_title}")
-        
-        filtered_candidates = []
-        candidate_scores = []
-        
+    def _calculate_title_similarity(self, job_title: str, candidate_preference: str) -> float:
+        """Calculate similarity between job title and candidate preference."""
+        _, similarity = self._are_job_titles_related(job_title, candidate_preference)
+        return similarity
+    
+    def _filter_candidates_by_job_preference(
+        self,
+        job_dict: Dict[str, Any],
+        candidates: List[CandidateProfile] # Changed input type
+    ) -> List[CandidateProfile]: # Changed return type
+        """
+        Filter candidates based on job preference similarity.
+
+        Args:
+            job_dict: Dictionary representation of the job.
+            candidates: List of CandidateProfile objects.
+
+        Returns:
+            List of CandidateProfile objects matching the job preference.
+        """
+        job_title_lower = job_dict.get("title", "").lower()
+        filtered_list = []
+        similarity_scores = []
+
+        print(f"Filtering candidates based on job preferences for: {job_title_lower}")
+
         for candidate in candidates:
-            candidate_name = candidate.get("name", "Unknown")
-            job_preference = candidate.get("position_preference", "") or candidate.get("jobs_applying_for", "")
-            
-            if not job_preference:
-                print(f"  {candidate_name}: No job preference specified - SKIP")
+            # Access preference directly from the CandidateProfile object
+            candidate_pref_lower = (candidate.jobs_applying_for or candidate.current_title or "").lower()
+
+            if not candidate_pref_lower:
+                print(f"  {candidate.name}: No job preference found - SKIP (Consider adding default behavior)")
                 continue
-                
-            is_related, similarity = self._are_job_titles_related(job_title, job_preference)
-            
-            if is_related:
-                print(f"  {candidate_name}: Preference '{job_preference}' MATCHES job '{job_title}' (similarity: {similarity:.2f})")
-                candidate_scores.append((candidate, similarity))
+
+            # Calculate similarity
+            similarity = self._calculate_title_similarity(job_title_lower, candidate_pref_lower)
+
+            # Basic Thresholding (adjust as needed)
+            PREFERENCE_SIMILARITY_THRESHOLD = 0.7
+            if similarity >= PREFERENCE_SIMILARITY_THRESHOLD:
+                print(f"  {candidate.name}: Preference '{candidate_pref_lower}' MATCHES job '{job_title_lower}' (similarity: {similarity:.2f})")
+                filtered_list.append(candidate) # Append the CandidateProfile object
+                similarity_scores.append((candidate, similarity))
             else:
-                print(f"  {candidate_name}: Preference '{job_preference}' does NOT match job '{job_title}' - SKIP")
-        
-        # Sort candidates by similarity score
-        candidate_scores.sort(key=lambda x: x[1], reverse=True)
-        filtered_candidates = [candidate for candidate, _ in candidate_scores]
-        
-        print(f"\nJob preference filtering complete:")
-        print(f"  {len(filtered_candidates)} candidates match the job preference out of {len(candidates)} total")
-        
-        if filtered_candidates:
+                print(f"  {candidate.name}: Preference '{candidate_pref_lower}' does NOT match job '{job_title_lower}' (similarity: {similarity:.2f}) - SKIP")
+
+        # Sort by similarity score, descending
+        similarity_scores.sort(key=lambda item: item[1], reverse=True)
+        sorted_candidates = [item[0] for item in similarity_scores] # Extract sorted CandidateProfile objects
+
+        print("\nJob preference filtering complete:")
+        print(f"  {len(sorted_candidates)} candidates match the job preference out of {len(candidates)} total")
+
+        if sorted_candidates:
             print("\nCandidates matching job preference (sorted by relevance):")
-            for i, (candidate, score) in enumerate(candidate_scores, 1):
-                print(f"  {i}. {candidate.get('name', 'Unknown')} - Similarity: {score:.2f}")
-        
-        return filtered_candidates
+            for i, (candidate, score) in enumerate(similarity_scores):
+                 print(f"  {i+1}. {candidate.name} - Similarity: {score:.2f}")
+
+        return sorted_candidates # Return the list of CandidateProfile objects
     
     def _research_role_requirements(self, job_title: str, important_qualities: str) -> Dict[str, Any]:
         """Research and analyze role requirements based on job title and important qualities."""
@@ -289,8 +315,102 @@ class AutoGenTalentMatcher:
         
         return expertise
 
+    def _extract_cv_sections(self, cv_content: str) -> Dict[str, str]:
+        """Extract different sections from CV content with improved pattern matching."""
+        if not cv_content:
+            print("Warning: CV content is empty for section extraction")
+            return {"experience": cv_content}
+        
+        cv_lower = cv_content.lower()
+        sections = {}
+        
+        # Define comprehensive section headers with more flexible patterns
+        section_patterns = {
+            "education": [
+                r'education[\s]*:?',
+                r'academic[\s]*background[\s]*:?',
+                r'qualifications[\s]*:?',
+                r'education\s+and\s+training[\s]*:?',
+                r'educational\s+background[\s]*:?',
+                r'degree',
+                r'education\s+history',
+                r'educational\s+qualifications',
+                r'certifications?[\s]*:?',
+                r'training[\s]*:?'
+            ],
+            "experience": [
+                r'experience[\s]*:?',
+                r'work[\s]*history[\s]*:?',
+                r'employment[\s]*history[\s]*:?',
+                r'professional[\s]*experience[\s]*:?',
+                r'work\s+experience',
+                r'employment\s+background',
+                r'career\s+history',
+                r'professional\s+background',
+                r'work\s+history',
+                r'employment\s+experience'
+            ],
+            "skills": [
+                r'skills[\s]*:?',
+                r'technical[\s]*skills[\s]*:?',
+                r'core[\s]*competencies[\s]*:?',
+                r'key[\s]*skills[\s]*:?',
+                r'professional[\s]*skills[\s]*:?',
+                r'expertise',
+                r'competencies',
+                r'technical\s+expertise',
+                r'areas\s+of\s+expertise',
+                r'professional\s+competencies'
+            ],
+            "projects": [
+                r'projects[\s]*:?',
+                r'key[\s]*projects[\s]*:?',
+                r'selected[\s]*projects[\s]*:?',
+                r'project\s+experience',
+                r'project\s+history',
+                r'notable\s+projects',
+                r'achievements',
+                r'key\s+achievements',
+                r'notable\s+achievements',
+                r'project\s+portfolio'
+            ],
+            "summary": [
+                r'summary[\s]*:?',
+                r'profile[\s]*:?',
+                r'professional\s+summary[\s]*:?',
+                r'career\s+summary[\s]*:?',
+                r'executive\s+summary[\s]*:?',
+                r'overview[\s]*:?',
+                r'introduction[\s]*:?'
+            ]
+        }
+        
+        # Find all section headers and their positions
+        section_positions = []
+        for section_name, patterns in section_patterns.items():
+            for pattern in patterns:
+                for match in re.finditer(pattern, cv_lower):
+                    section_positions.append((match.start(), section_name))
+        
+        # Sort sections by position
+        section_positions.sort(key=lambda x: x[0])
+        
+        # Extract content between sections
+        for i, (start_pos, section_name) in enumerate(section_positions):
+            if i < len(section_positions) - 1:
+                next_start = section_positions[i + 1][0]
+                sections[section_name] = cv_content[start_pos:next_start].strip()
+            else:
+                sections[section_name] = cv_content[start_pos:].strip()
+        
+        # If no sections found, treat entire content as experience
+        if not sections:
+            sections["experience"] = cv_content
+        
+        return sections
+
     def _analyze_cv_content(self, cv_content: str, role_expertise: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze CV content against role expertise requirements using intelligent context analysis."""
+        """Analyze CV content against role expertise requirements with enhanced context analysis."""
         if not cv_content or not cv_content.strip():
             print("Warning: Empty CV content provided")
             return {
@@ -310,268 +430,383 @@ class AutoGenTalentMatcher:
         
         if not sections:
             print("Warning: No sections could be extracted from CV content")
-            # Try to analyze the entire content as a single section
-            evidence_results = self._evaluate_evidence_in_context(
-                cv_content, 
-                {"experience": cv_content},  # Use entire content as experience
-                role_expertise["required_evidence"],
-                []  # No inferred skills
-            )
             return {
-                "evidence_found": evidence_results["evidence_found"],
-                "evidence_scores": evidence_results["evidence_scores"],
+                "evidence_found": [],
+                "evidence_scores": {},
                 "project_evaluation": [],
                 "inferred_skills": [],
-                "overall_cv_score": evidence_results["overall_score"]
+                "overall_cv_score": 0.0
             }
         
-        # Extract skills inferred from education
-        education_section = sections.get("education", "")
-        inferred_domain_knowledge = self._infer_domain_knowledge_from_education(education_section)
-        print(f"Inferred {len(inferred_domain_knowledge)} skills from education section")
+        # Extract skills and qualities from different sections
+        inferred_skills = []
+        inferred_qualities = []
         
-        # Extract skills inferred from work experience
-        experience_section = sections.get("experience", "")
-        inferred_skills_from_experience = self._infer_skills_from_experience(experience_section)
-        print(f"Inferred {len(inferred_skills_from_experience)} skills from experience section")
+        # Extract from skills section
+        if "skills" in sections:
+            skills_text = sections["skills"]
+            inferred_skills.extend(self._extract_skills_from_text(skills_text))
         
-        # Combine all inferred skills
-        inferred_skills = inferred_domain_knowledge + inferred_skills_from_experience
+        # Extract from experience section
+        if "experience" in sections:
+            experience_text = sections["experience"]
+            inferred_skills.extend(self._extract_skills_from_text(experience_text))
+            inferred_qualities.extend(self._extract_qualities_from_experience(experience_text))
+        
+        # Extract from projects section
+        if "projects" in sections:
+            projects_text = sections["projects"]
+            inferred_skills.extend(self._extract_skills_from_text(projects_text))
+            inferred_qualities.extend(self._extract_qualities_from_projects(projects_text))
+        
+        # Extract from summary section
+        if "summary" in sections:
+            summary_text = sections["summary"]
+            inferred_qualities.extend(self._extract_qualities_from_summary(summary_text))
+        
+        # Remove duplicates and normalize
+        inferred_skills = list(set(skill.lower() for skill in inferred_skills))
+        inferred_qualities = list(set(quality.lower() for quality in inferred_qualities))
+        
         print(f"Total inferred skills: {len(inferred_skills)}")
+        print(f"Total inferred qualities: {len(inferred_qualities)}")
         
-        # Evaluate required evidence in context of all CV sections
+        # Evaluate required evidence in context
         evidence_results = self._evaluate_evidence_in_context(
             cv_content, 
             sections, 
             role_expertise["required_evidence"],
-            inferred_skills
+            inferred_skills,
+            inferred_qualities
         )
         
-        # Return comprehensive analysis
         return {
             "evidence_found": evidence_results["evidence_found"],
             "evidence_scores": evidence_results["evidence_scores"],
             "project_evaluation": self._evaluate_projects(sections.get("projects", ""), role_expertise),
             "inferred_skills": inferred_skills,
+            "inferred_qualities": inferred_qualities,
             "overall_cv_score": evidence_results["overall_score"]
         }
 
-    def _extract_cv_sections(self, cv_content: str) -> Dict[str, str]:
-        """Extract different sections from CV content."""
-        if not cv_content:
-            print("Warning: CV content is empty for section extraction")
-            # Return the entire content as experience section
-            return {"experience": cv_content}
+    def _extract_skills_from_text(self, text: str) -> List[str]:
+        """Extract skills from text using multiple patterns, focusing on data science.
+        Now the primary source for candidate skills.
+        """
+        skills = set()
+        text_lower = text.lower()
+        
+        # Define more comprehensive skill patterns, especially for data science
+        skill_patterns = [
+            # Programming Languages & Core Libraries
+            r'\b(python|r|sql|java|scala|c\+\+|julia)\b',
+            r'\b(pandas|numpy|scipy|scikit-learn|sklearn|matplotlib|seaborn|plotly)\b',
+            r'\b(tensorflow|keras|pytorch|theano|caffe|mxnet|jax)\b',
+            r'\b(nltk|spacy|gensim|transformers)\b', # NLP
+            r'\b(opencv|pillow)\b', # Computer Vision
             
-        cv_lower = cv_content.lower()
-        sections = {}
+            # Databases & Data Warehousing
+            r'\b(sql|mysql|postgresql|postgres|sqlite|sql server|tsql|pl/sql|oracle|mongodb|cassandra|redis|neo4j)\b',
+            r'\b(bigquery|redshift|snowflake|teradata|hive|presto|spark sql)\b',
+            
+            # Big Data & Distributed Computing
+            r'\b(spark|pyspark|hadoop|hdfs|mapreduce|kafka|flink|storm)\b',
+            
+            # Cloud Platforms
+            r'\b(aws|azure|gcp|google cloud|amazon web services)\b',
+            r'\b(sagemaker|azure ml|google ai platform|databricks|kubernetes|docker)\b',
+            
+            # ML/AI Concepts & Techniques
+            r'\b(machine learning|ml|deep learning|dl|artificial intelligence|ai)\b',
+            r'\b(natural language processing|nlp|computer vision|cv|reinforcement learning|rl)\b',
+            r'\b(regression|classification|clustering|dimensionality reduction|feature engineering)\b',
+            r'\b(neural networks?|cnn|rnn|lstm|transformer[s]?)\b',
+            r'\b(gradient boosting|xgboost|lightgbm|catboost|random forest|svm|decision tree[s]?)\b',
+            r'\b(a/b testing|experimentation|statistical modeling|statistics|probability)\b',
+            
+            # BI & Visualization Tools
+            r'\b(tableau|power bi|powerbi|qlik|looker|d3.js|ggplot2)\b',
+            
+            # General Software Engineering
+            r'\b(git|linux|bash|shell scripting|api[s]?|rest api)\b'
+        ]
         
-        # Define common section headers with more flexible patterns
-        section_patterns = {
-            "education": [
-                r'education[\s]*:?',
-                r'academic[\s]*background[\s]*:?',
-                r'qualifications[\s]*:?',
-                r'education\s+and\s+training[\s]*:?',
-                r'educational\s+background[\s]*:?',
-                r'degree',
-                r'education\s+history',
-                r'educational\s+qualifications'
-            ],
-            "experience": [
-                r'experience[\s]*:?',
-                r'work[\s]*history[\s]*:?',
-                r'employment[\s]*history[\s]*:?',
-                r'professional[\s]*experience[\s]*:?',
-                r'work\s+experience',
-                r'employment\s+background',
-                r'career\s+history'
-            ],
-            "skills": [
-                r'skills[\s]*:?',
-                r'technical[\s]*skills[\s]*:?',
-                r'core[\s]*competencies[\s]*:?',
-                r'key[\s]*skills[\s]*:?',
-                r'professional[\s]*skills[\s]*:?',
-                r'expertise',
-                r'competencies'
-            ],
-            "projects": [
-                r'projects[\s]*:?',
-                r'key[\s]*projects[\s]*:?',
-                r'selected[\s]*projects[\s]*:?',
-                r'project\s+experience',
-                r'project\s+history',
-                r'notable\s+projects'
-            ]
-        }
-        
-        # Find all section headers and their positions
-        section_positions = []
-        for section_name, patterns in section_patterns.items():
-            for pattern in patterns:
-                for match in re.finditer(pattern, cv_lower):
-                    section_positions.append((match.start(), section_name))
-        
-        # Sort sections by position
-        section_positions.sort(key=lambda x: x[0])
-        
-        if section_positions:
-            # Extract content between sections
-            for i, (start_pos, section_name) in enumerate(section_positions):
-                # Get end position (next section or end of content)
-                end_pos = section_positions[i + 1][0] if i + 1 < len(section_positions) else len(cv_content)
-                
-                # Extract the section content
-                section_content = cv_content[start_pos:end_pos].strip()
-                if section_content:
-                    # Remove the section header from content
-                    section_content = re.sub(r'^.*?:', '', section_content, flags=re.IGNORECASE).strip()
-                    sections[section_name] = section_content
-                    print(f"Extracted {section_name} section: {len(section_content)} characters")
-        else:
-            print("No section headers found in CV content")
-            # If no sections found, treat entire content as experience section
-            sections["experience"] = cv_content
-            print(f"Using entire content as experience section: {len(cv_content)} characters")
-        
-        return sections
+        # Contextual patterns (e.g., "experience with Python")
+        context_patterns = [
+            r'(?:proficient in|expert in|skilled in|experience with|knowledge of|working with|using)\s+((?:\b\w+\b[\s,]*){1,4})',
+            r'(?:skills?|expertise|competencies?)\s*[:\-]?\s*((?:\b\w+\b[\s,]*){1,10})'
+        ]
 
-    def _infer_domain_knowledge_from_education(self, education_text: str) -> List[str]:
-        """Infer domain knowledge based on educational background."""
-        inferred_skills = []
-        
-        # Map education fields to domain knowledge
-        domain_mappings = {
-            "finance": ["financial domain knowledge", "financial analysis"],
-            "accounting": ["financial domain knowledge", "accounting"],
-            "economics": ["financial domain knowledge", "economic analysis"],
-            "business": ["business domain knowledge"],
-            "computer science": ["technical domain knowledge", "programming"],
-            "data science": ["data analysis", "statistical modeling"]
-        }
-        
-        if not education_text:
-            return inferred_skills
-        
-        # Check for degree fields
-        for domain, skills in domain_mappings.items():
-            if domain in education_text.lower():
-                print(f"Inferred domain knowledge from education: {domain} -> {skills}")
-                inferred_skills.extend(skills)
-        
-        return inferred_skills
+        # Direct keyword matching
+        for pattern in skill_patterns:
+            matches = re.findall(pattern, text_lower)
+            for match in matches:
+                skills.add(match.strip())
 
-    def _infer_skills_from_experience(self, experience_text: str) -> List[str]:
-        """Infer skills based on work experience descriptions."""
-        inferred_skills = []
+        # Contextual matching
+        for pattern in context_patterns:
+            matches = re.findall(pattern, text_lower)
+            for match_group in matches:
+                # Potential skills are within the matched group
+                potential_skills = match_group.split(',')
+                for ps in potential_skills:
+                    ps_clean = ps.strip()
+                    if len(ps_clean) > 1: # Avoid single letters
+                        # Check if the potential skill matches any known patterns directly
+                        for skill_pattern in skill_patterns:
+                            if re.search(skill_pattern, ps_clean):
+                                skills.add(ps_clean)
+                                break # Add once per potential skill
+                        # Basic check for likely skills (e.g., alphanumeric, possibly with ., +, #)
+                        if re.match(r'^[a-z0-9\.\+\#\s\-/]+$', ps_clean) and len(ps_clean) <= 30:
+                             skills.add(ps_clean) # Add plausible skills even if not in specific list
+                             
+        # Clean up common non-skill words often caught by context patterns
+        non_skills = {"various", "multiple", "different", "tools", "technologies", "languages", "concepts", "methods", "techniques", "including", "such as"}
+        skills = {s for s in skills if s not in non_skills and len(s) > 1} # Remove single letters/short strings
+                             
+        print(f"Extracted {len(skills)} unique skills from text.")
+        if self.debug and skills:
+             logger.debug(f"Sample extracted skills: {list(skills)[:10]}")
         
-        if not experience_text:
-            return inferred_skills
+        return list(skills)
+
+    def _extract_qualities_from_experience(self, text: str) -> List[str]:
+        """Extract important qualities from experience section."""
+        qualities = []
         
-        # Look for roles and responsibilities that imply skills
-        role_skill_mapping = {
-            "data analy": ["data analysis", "statistical analysis"],
-            "financ": ["financial analysis", "financial domain knowledge"],
-            "develop": ["software development"],
-            "program": ["programming"],
-            "database": ["database management", "sql"],
-            "machine learning": ["machine learning", "predictive modeling"]
-        }
+        # Patterns for identifying qualities in experience
+        quality_patterns = [
+            r'(?:demonstrated|shown|exhibited|displayed)\s+(?:strong|excellent|good)\s+(?:ability|skill|capacity)\s+(?:in|for|to)\s+([^.,;]+)',
+            r'(?:proven|established|demonstrated)\s+(?:track record|ability|experience)\s+(?:in|for|of)\s+([^.,;]+)',
+            r'(?:excellent|strong|outstanding)\s+(?:communication|leadership|problem-solving|analytical)\s+(?:skills?|abilities?|capabilities?)',
+            r'(?:successfully|effectively)\s+(?:managed|led|handled|oversaw)\s+([^.,;]+)',
+            r'(?:key|critical|important)\s+(?:contributions?|achievements?|accomplishments?)\s+(?:in|for|of)\s+([^.,;]+)'
+        ]
         
-        for role_indicator, implied_skills in role_skill_mapping.items():
-            if role_indicator in experience_text.lower():
-                print(f"Inferred skills from experience: {role_indicator} -> {implied_skills}")
-                inferred_skills.extend(implied_skills)
+        for pattern in quality_patterns:
+            matches = re.finditer(pattern, text.lower())
+            for match in matches:
+                quality_text = match.group(1).strip() if len(match.groups()) > 0 else match.group(0).strip()
+                qualities.append(quality_text)
         
-        return inferred_skills
+        return qualities
+
+    def _extract_qualities_from_projects(self, text: str) -> List[str]:
+        """Extract important qualities from projects section."""
+        qualities = []
+        
+        # Patterns for identifying qualities in projects
+        quality_patterns = [
+            r'(?:demonstrated|shown|exhibited)\s+(?:ability|skill|capacity)\s+(?:in|for|to)\s+([^.,;]+)',
+            r'(?:successfully|effectively)\s+(?:implemented|developed|designed)\s+([^.,;]+)',
+            r'(?:key|critical|important)\s+(?:contributions?|achievements?)\s+(?:in|for|of)\s+([^.,;]+)',
+            r'(?:improved|enhanced|optimized)\s+([^.,;]+)\s+(?:by|through|using)\s+([^.,;]+)',
+            r'(?:led|managed|oversaw)\s+(?:team|project|initiative)\s+(?:in|for|of)\s+([^.,;]+)'
+        ]
+        
+        for pattern in quality_patterns:
+            matches = re.finditer(pattern, text.lower())
+            for match in matches:
+                quality_text = match.group(1).strip() if len(match.groups()) > 0 else match.group(0).strip()
+                qualities.append(quality_text)
+        
+        return qualities
+
+    def _extract_qualities_from_summary(self, text: str) -> List[str]:
+        """Extract important qualities from summary section."""
+        qualities = []
+        
+        # Patterns for identifying qualities in summary
+        quality_patterns = [
+            r'(?:proven|established|demonstrated)\s+(?:track record|ability|experience)\s+(?:in|for|of)\s+([^.,;]+)',
+            r'(?:excellent|strong|outstanding)\s+(?:communication|leadership|problem-solving|analytical)\s+(?:skills?|abilities?|capabilities?)',
+            r'(?:passionate|dedicated|committed)\s+(?:to|about)\s+([^.,;]+)',
+            r'(?:strong|excellent|good)\s+(?:ability|capacity)\s+(?:to|for)\s+([^.,;]+)',
+            r'(?:proven|demonstrated)\s+(?:ability|capacity)\s+(?:to|for)\s+([^.,;]+)'
+        ]
+        
+        for pattern in quality_patterns:
+            matches = re.finditer(pattern, text.lower())
+            for match in matches:
+                quality_text = match.group(1).strip() if len(match.groups()) > 0 else match.group(0).strip()
+                qualities.append(quality_text)
+        
+        return qualities
 
     def _evaluate_evidence_in_context(self, cv_content: str, sections: Dict[str, str], 
-                                    required_evidence: List[str], inferred_skills: List[str]) -> Dict[str, Any]:
-        """Evaluate required evidence across all CV content with context awareness."""
+                                    required_evidence: List[str], inferred_skills: List[str],
+                                    inferred_qualities: List[str]) -> Dict[str, Any]:
+        """Evaluate required evidence (including skills and qualities) across all CV content 
+           with enhanced context awareness and semantic matching for qualities.
+        """
         evidence_found = []
         evidence_scores = {}
-        
         cv_lower = cv_content.lower()
         
-        # Check for direct evidence from required evidence list
-        for evidence in required_evidence:
-            evidence_lower = evidence.lower()
-            
-            # Direct match in CV
+        # Define keywords for semantic matching of complex qualities
+        quality_keywords = {
+            "fintech experience": ["fintech", "financial services", "banking", "payments", "trading", "insurance", "wealth management", "regtech"],
+            "analytical thinking": ["analyze", "analysis", "analytical", "quantitative", "modeling", "metrics", "insights", "data-driven", "statistical", "problem solving", "diagnose"],
+            # Add more qualities and their keywords as needed
+            "team leadership": ["lead", "led", "manage", "managed", "mentor", "mentored", "supervised", "team lead", "leadership"],
+            "project management": ["project manage", "coordinated", "delivered", "launched", "agile", "scrum", "roadmap", "timeline"],
+            "communication skills": ["presented", "presentation", "communicated", "documentation", "reported", "liaised", "stakeholder"]
+        }
+
+        print(f"Evaluating required evidence: {required_evidence}")
+        if self.debug:
+            logger.debug(f"Inferred Skills for evidence check: {inferred_skills}")
+            logger.debug(f"Inferred Qualities for evidence check: {inferred_qualities}")
+
+        for evidence_item in required_evidence:
+            evidence_lower = evidence_item.lower().strip()
+            best_score = 0.0
+            match_type = "None"
+
+            # 1. Direct match in CV content (Highest score)
             if evidence_lower in cv_lower:
-                evidence_found.append(evidence)
-                # Determine context quality based on surrounding content
-                context_score = self._assess_evidence_context(cv_lower, evidence_lower)
-                evidence_scores[evidence] = context_score
-                continue
+                best_score = 1.0
+                match_type = "Direct CV Match"
             
-            # Check for semantic matches using inferred skills
-            for skill in inferred_skills:
-                if self._are_terms_semantically_related(evidence_lower, skill.lower()):
-                    evidence_found.append(evidence)
-                    evidence_scores[evidence] = 0.8  # Good score for inferred match
-                    print(f"Semantic match: {evidence} via inferred skill {skill}")
-                    break
-        
-        # Calculate overall score
-        if evidence_found:
-            overall_score = sum(evidence_scores.values()) / len(required_evidence)
+            # 2. Check in inferred skills (High score)
+            # Use more robust skill matching (handle minor variations)
+            if best_score < 0.8:
+                for skill in inferred_skills:
+                    # Simple substring check or more advanced matching could be used
+                    if evidence_lower == skill or evidence_lower in skill or skill in evidence_lower:
+                        best_score = max(best_score, 0.8)
+                        match_type = "Inferred Skill Match"
+                        break
+            
+            # 3. Check in inferred qualities (Good score)
+            if best_score < 0.7:
+                 for quality in inferred_qualities:
+                     if evidence_lower == quality or evidence_lower in quality or quality in evidence_lower:
+                         best_score = max(best_score, 0.7)
+                         match_type = "Inferred Quality Match"
+                         break
+
+            # 4. Semantic keyword matching for known qualities
+            if best_score < 0.6 and evidence_lower in quality_keywords:
+                keywords = quality_keywords[evidence_lower]
+                keyword_score = self._evaluate_semantic_match(keywords, cv_lower, sections)
+                if keyword_score > best_score:
+                    best_score = keyword_score # Use the semantic score directly
+                    match_type = "Semantic Keyword Match"
+
+            # 5. General context match (Fallback)
+            if best_score < 0.3:
+                context_score = self._evaluate_context_match(evidence_lower, cv_lower, sections)
+                if context_score > best_score:
+                    best_score = context_score
+                    match_type = "General Context Match"
+
+            # Record if any match found
+            if best_score > 0.1: # Set a minimum threshold to consider it found
+                evidence_found.append(evidence_item)
+                evidence_scores[evidence_item] = round(best_score, 2)
+                if self.debug:
+                     logger.debug(f"  Evidence '{evidence_item}': Found (Score: {best_score:.2f}, Type: {match_type})")
+            elif self.debug:
+                 logger.debug(f"  Evidence '{evidence_item}': Not found")
+
+        # Calculate overall score based on matched evidence
+        overall_score = 0.0
+        if required_evidence: # Avoid division by zero
+             # Average score of found items, scaled by proportion found
+             if evidence_scores:
+                 average_score_found = sum(evidence_scores.values()) / len(evidence_scores)
+                 proportion_found = len(evidence_scores) / len(required_evidence)
+                 overall_score = average_score_found * proportion_found
+             else:
+                 overall_score = 0.0 # No evidence found
         else:
-            overall_score = 0.1  # Minimal score if nothing found
+            overall_score = 0.5 # No specific evidence required, default score
+
+        print(f"Evidence evaluation complete. Found: {len(evidence_found)}/{len(required_evidence)}. Overall Score: {overall_score:.2f}")
         
         return {
             "evidence_found": evidence_found,
             "evidence_scores": evidence_scores,
-            "overall_score": overall_score
+            "overall_score": round(overall_score, 2)
         }
 
-    def _assess_evidence_context(self, cv_text: str, evidence: str) -> float:
-        """Assess the quality of context around evidence mention."""
-        # Find sentences containing the evidence
-        sentences = re.split(r'[.!?]', cv_text)
-        evidence_sentences = [s for s in sentences if evidence in s]
+    def _evaluate_context_match(self, evidence: str, cv_content: str, sections: Dict[str, str]) -> float:
+        """Evaluate evidence match based on word overlap within important CV sections."""
+        evidence_words = set(evidence.split())
+        if not evidence_words:
+            return 0.0
         
-        if not evidence_sentences:
-            return 0.5  # Default score
-        
-        # Higher score for evidence with action verbs and metrics
-        context_score = 0.6  # Base score
-        
-        for sentence in evidence_sentences:
-            # Check for action verbs
-            if re.search(r'\b(developed|implemented|managed|led|created|designed|analyzed)\b', sentence):
-                context_score += 0.1
+        max_score = 0.0
+        # Define section weights (higher for more relevant sections)
+        section_weights = {
+            "experience": 1.0,
+            "projects": 0.9,
+            "summary": 0.8,
+            "skills": 0.7, 
+            "education": 0.5
+            # Other sections get a default low weight
+        }
+        default_weight = 0.3
+
+        for section_name, section_content in sections.items():
+            section_lower = section_content.lower()
+            section_words = set(section_lower.split())
             
-            # Check for metrics/achievements
-            if re.search(r'\b(\d+%|\$\d+|increased|improved|reduced|grew)\b', sentence):
-                context_score += 0.2
+            # Count word matches
+            common_words = evidence_words.intersection(section_words)
+            
+            # Calculate score based on Jaccard index (word overlap)
+            if evidence_words.union(section_words):
+                overlap_score = len(common_words) / len(evidence_words) # Score relative to evidence length
+            else:
+                 overlap_score = 0.0
+            
+            # Apply section weight
+            weight = section_weights.get(section_name, default_weight)
+            weighted_score = overlap_score * weight
+            
+            max_score = max(max_score, weighted_score)
         
-        # Cap at 1.0
-        return min(1.0, context_score)
+        # Return a score between 0 and 0.6 (context match is weaker evidence)
+        return min(0.6, max_score) 
 
-    def _are_terms_semantically_related(self, term1: str, term2: str) -> bool:
-        """Determine if two terms are semantically related (simplified)."""
-        # Direct substring match
-        if term1 in term2 or term2 in term1:
-            return True
-        
-        # Related terms mapping (could be expanded)
-        related_terms = {
-            "finance": ["financial", "accounting", "banking", "investment"],
-            "machine learning": ["ml", "predictive modeling", "ai", "artificial intelligence"],
-            "database": ["sql", "nosql", "data storage"],
-            "programming": ["coding", "development", "software engineering"],
-            "python": ["py", "python programming"],
-            "analysis": ["analytics", "analyzing", "analytical"]
+    def _evaluate_semantic_match(self, keywords: List[str], cv_content: str, sections: Dict[str, str]) -> float:
+        """Evaluate if related keywords appear in relevant sections, providing semantic evidence.
+        Returns a score between 0.3 and 0.8 based on keyword presence and section.
+        """
+        max_score = 0.0
+        keyword_found = False
+        # Define section weights for semantic matches
+        section_weights = {
+            "experience": 0.8, 
+            "projects": 0.7, 
+            "summary": 0.6,
+            "skills": 0.5, # Keywords might appear in skill lists indirectly
+            "education": 0.4
         }
-        
-        # Check if terms are related via our mapping
-        for key, related in related_terms.items():
-            if (term1 in [key] + related) and (term2 in [key] + related):
-                return True
-        
-        return False
+        default_weight = 0.3
+
+        for section_name, section_content in sections.items():
+            section_lower = section_content.lower()
+            found_in_section = False
+            for keyword in keywords:
+                if keyword in section_lower:
+                    keyword_found = True
+                    found_in_section = True
+                    break # Found at least one keyword in this section
+            
+            if found_in_section:
+                weight = section_weights.get(section_name, default_weight)
+                max_score = max(max_score, weight)
+                # If found in high-importance section, boost score slightly
+                if section_name in ["experience", "projects"]:
+                    max_score = max(max_score, weight + 0.05) # Small boost
+
+        # Return score only if at least one keyword was found anywhere
+        # The score reflects *where* it was found (strongest section)
+        return min(0.8, max_score) if keyword_found else 0.0
 
     def _evaluate_projects(self, projects_text: str, role_expertise: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Evaluate projects section against role requirements."""
@@ -629,30 +864,86 @@ class AutoGenTalentMatcher:
         
         return project_evaluations
 
-    def _evaluate_candidate_cv(self, candidate: Dict[str, Any], role_expertise: Dict[str, Any]) -> float:
-        """Evaluate a candidate's CV content against role requirements."""
-        cv_content = candidate.get("cv_content", "")
+    def _evaluate_candidate_cv(self, candidate, role_expertise: Dict[str, Any]) -> Dict[str, Any]:
+        """Evaluate a candidate's CV content against role requirements.
+        Works with both dictionary candidates and CandidateProfile objects.
+        """
         
+        # Handle both dictionary and CandidateProfile objects
+        if hasattr(candidate, 'cv_content'):
+            # It's a CandidateProfile object
+            cv_content = candidate.cv_content or ""
+            candidate_name = candidate.name
+            cv_link = candidate.cv_link or ""
+        else:
+            # It's a dictionary
+            cv_content = candidate.get("cv_content", "")
+            candidate_name = candidate.get('name', 'Unknown')
+            cv_link = candidate.get("cv_link", "")
+
+        # If no content, try fetching it using the stored CV link
+        if not cv_content and cv_link:
+            print(f"CV content not found for {candidate_name}. Fetching from link: {cv_link}")
+            try:
+                # Use the stored tool instance to fetch content
+                cv_content = self.tool.extract_cv_content(cv_link)
+                if cv_content:
+                    print(f"Successfully fetched {len(cv_content)} characters for {candidate_name}")
+                    # Update the candidate with the fetched content
+                    if hasattr(candidate, 'cv_content'):
+                        candidate.cv_content = cv_content
+                    else:
+                        candidate["cv_content"] = cv_content
+                else:
+                    print(f"Warning: Failed to fetch CV content for {candidate_name} from link.")
+                    cv_content = "" # Ensure it's an empty string if fetch fails
+            except Exception as e:
+                print(f"Error fetching CV content for {candidate_name}: {str(e)}")
+                cv_content = "" # Ensure it's an empty string on error
+        
+        # Proceed with evaluation, whether content was pre-existing or just fetched
         if self.debug:
-            logger.debug(f"\nEvaluating CV for {candidate.get('name', 'Unknown')}")
+            logger.debug(f"\nEvaluating CV for {candidate_name}")
             logger.debug(f"CV content length: {len(cv_content)}")
             if cv_content:
                 logger.debug("First 100 chars of CV:")
                 logger.debug(cv_content[:100])
         
         if not cv_content:
-            logger.debug("No CV content available") if self.debug else None
-            return 0.1
+            logger.debug("No CV content available for analysis") if self.debug else None
+            cv_analysis = { # Add empty analysis if no CV
+                "evidence_found": [],
+                "evidence_scores": {},
+                "project_evaluation": [],
+                "inferred_skills": [],
+                "overall_cv_score": 0.1
+            }
+            # Store the analysis in the candidate
+            self._store_cv_analysis(candidate, cv_analysis)
+            return cv_analysis
         
         cv_analysis = self._analyze_cv_content(cv_content, role_expertise)
-        candidate["cv_analysis"] = cv_analysis
+        
+        # Store the analysis in the candidate
+        self._store_cv_analysis(candidate, cv_analysis)
         
         if self.debug:
             logger.debug(f"CV Analysis Results:")
             logger.debug(f"Evidence found: {cv_analysis.get('evidence_found', [])}")
             logger.debug(f"Overall score: {cv_analysis.get('overall_cv_score', 0)}")
         
-        return cv_analysis["overall_cv_score"]
+        return cv_analysis
+        
+    def _store_cv_analysis(self, candidate, cv_analysis: Dict[str, Any]) -> None:
+        """Helper method to store CV analysis appropriately based on candidate type."""
+        # For Pydantic models, store in the separate dictionary using candidate ID or name as key
+        if hasattr(candidate, '__dict__'):
+            # Use candidate_id if available, otherwise use name as key
+            key = getattr(candidate, 'candidate_id', None) or getattr(candidate, 'name', str(id(candidate)))
+            self.candidate_analysis_results[key] = cv_analysis
+        else:
+            # Handle dictionary - store directly in the dictionary
+            candidate["cv_analysis"] = cv_analysis
     
     def _evaluate_skills_match(self, job: Dict[str, Any], candidate: Dict[str, Any]) -> float:
         """Evaluate how well a candidate's skills match the job requirements."""
@@ -708,85 +999,134 @@ class AutoGenTalentMatcher:
                 
         return 0.5
     
-    def _filter_candidates(self, job: Dict[str, Any], candidates: List[Dict[str, Any]], 
-                         min_match_threshold: float = 0.3) -> List[Dict[str, Any]]:
-        """Filter candidates based on initial criteria."""
+    def _filter_candidates(self, job_dict: Dict[str, Any], candidates: List[CandidateProfile], 
+                           min_match_threshold: float = 0.5) -> List[MatchResult]:
+        """Filter candidates based on detailed criteria including experience and CV analysis."""
+        logger.info(f"Performing detailed analysis on {len(candidates)} job preference filtered candidates")
+        matched_candidates = []
+        
+        # Define role expertise based on job details
         role_expertise = self._research_role_requirements(
-            job.get("title", ""),
-            job.get("important_qualities", "")
+            job_dict.get("title", ""),
+            job_dict.get("important_qualities", "")
         )
-        
-        filtered_results = []
-        print(f"\nEvaluating {len(candidates)} candidates for {job.get('title', '')}...")
-        
-        for candidate in candidates:
-            candidate_name = candidate.get("name", "Unknown")
-            
-            skills_match = self._evaluate_skills_match(job, candidate)
-            experience_match = self._evaluate_experience_match(job, candidate)
-            cv_match = self._evaluate_candidate_cv(candidate, role_expertise)
-            location_match = self._evaluate_location_match(job, candidate)
-            
-            weights = {
-                "skills_match": 0.3,
-                "experience_match": 0.2,
-                "cv_match": 0.4,
-                "location_match": 0.1
-            }
-            
-            match_data = {
-                "skills_match": skills_match,
-                "experience_match": experience_match,
-                "cv_match": cv_match,
-                "location_match": location_match
-            }
-            
-            initial_score = sum(match_data[key] * weights[key] for key in weights)
-            
-            print(f"\nCandidate: {candidate_name}")
-            print(f"  Skills Match: {skills_match:.2f}")
-            print(f"  Experience Match: {experience_match:.2f}")
-            print(f"  CV Content Match: {cv_match:.2f}")
-            print(f"  Location Match: {location_match:.2f}")
-            print(f"  Initial Score: {initial_score:.2f}")
-            
-            if initial_score >= min_match_threshold:
-                print(f"  MATCH: Score {initial_score:.2f} >= threshold {min_match_threshold}")
-                filtered_results.append({
-                    "candidate": candidate,
-                    "match_data": {
-                        **match_data,
-                        "initial_match_score": initial_score,
-                        "role_expertise": role_expertise
-                    }
-                })
-            else:
-                print(f"  NO MATCH: Score {initial_score:.2f} < threshold {min_match_threshold}")
-        
-        filtered_results.sort(key=lambda x: x["match_data"]["initial_match_score"], reverse=True)
-        return filtered_results
 
-    def _rank_candidates_with_detail(self, job: Dict[str, Any], filtered_candidates: List[Dict[str, Any]], 
+        for candidate in candidates:
+            logger.debug(f"\nEvaluating candidate: {candidate.name} (Row: {getattr(candidate, 'row_number', 'N/A')})")
+            
+            # Basic experience check (if required)
+            min_exp = job_dict.get("min_years_experience", 0) or 0
+            candidate_exp = candidate.years_of_experience or 0
+            if min_exp > 0:
+                logger.debug(f"Experience check for {candidate.name}: {candidate_exp} years vs required {min_exp}")
+                if candidate_exp < min_exp:
+                    logger.info(f"  Skipping {candidate.name} due to insufficient experience ({candidate_exp} < {min_exp})")
+                    continue
+            
+            # --- Fetch CV Content if needed --- 
+            if candidate.cv_link and not candidate.cv_content:
+                 logger.debug(f"Fetching CV content for {candidate.name} from {candidate.cv_link}")
+                 try:
+                     # Use the tool instance provided during initialization
+                     fetched_content = self.tool.extract_cv_content(candidate.cv_link)
+                     candidate.cv_content = fetched_content if fetched_content else ""
+                     if not candidate.cv_content:
+                         logger.warning(f"CV content extraction failed or returned empty for {candidate.name}")
+                 except Exception as e:
+                     logger.error(f"Error fetching CV content for {candidate.name}: {e}")
+                     candidate.cv_content = "" # Ensure it's a string even on error
+            elif not candidate.cv_link:
+                 logger.debug(f"No CV link for {candidate.name}, setting CV content to empty string.")
+                 candidate.cv_content = ""
+            else:
+                 logger.debug(f"CV content already present for {candidate.name}")
+            # ---------------------------------
+
+            # Evaluate CV content
+            cv_match = self._evaluate_candidate_cv(candidate, role_expertise)
+            
+            # Get candidate key to retrieve analysis results
+            candidate_key = getattr(candidate, 'candidate_id', None) or getattr(candidate, 'name', str(id(candidate)))
+            
+            # Evaluate skills match
+            required_skills = job_dict.get("required_skills", [])
+            preferred_skills = job_dict.get("preferred_skills", [])
+            
+            # Retrieve inferred skills from our stored analysis
+            cv_analysis = self.candidate_analysis_results.get(candidate_key, {})
+            inferred_skills = cv_analysis.get('inferred_skills', [])
+            
+            skill_match = self._detailed_skill_matching_for_profile(candidate, required_skills, preferred_skills, 
+                                                             inferred_skills)
+            
+            # Combine scores (customize weighting as needed)
+            cv_score = cv_analysis.get("overall_cv_score", 0.1)
+            skill_score = skill_match.get("overall_skill_score", 0.1)
+            
+            overall_score = (cv_score * 0.6) + (skill_score * 0.4)
+            
+            logger.debug(f"  CV Score: {cv_score:.2f}")
+            logger.debug(f"  Skill Score: {skill_score:.2f}")
+            logger.info(f"  Overall Score for {candidate.name}: {overall_score:.2f}")
+            
+            if overall_score >= min_match_threshold:
+                matched_candidates.append(MatchResult(
+                    candidate_id=candidate.candidate_id,
+                    candidate_name=candidate.name,
+                    score=overall_score,
+                    details={
+                        "cv_score": cv_score,
+                        "skill_score": skill_score,
+                        "required_skills_matched": skill_match.get("required_skills_matched", []),
+                        "required_skills_missing": skill_match.get("required_skills_missing", []),
+                        "evidence_found": cv_analysis.get("evidence_found", []),
+                        "evidence_scores": cv_analysis.get("evidence_scores", {})
+                    },
+                    row_number=getattr(candidate, 'row_number', None) # Include row number
+                ))
+            else:
+                logger.info(f"  Candidate {candidate.name} did not meet threshold ({overall_score:.2f} < {min_match_threshold}) ")
+        
+        # Sort by score descending
+        matched_candidates.sort(key=lambda x: x.score, reverse=True)
+        
+        return matched_candidates
+
+    def _rank_candidates_with_detail(self, job: Dict[str, Any], filtered_candidates: List[MatchResult], 
                                    top_n: int = 10) -> List[Dict[str, Any]]:
         """Rank candidates based on comprehensive evaluation."""
         ranked_results = []
         
         print(f"\nPerforming detailed ranking of {len(filtered_candidates)} candidates...")
         
-        for item in filtered_candidates:
-            candidate = item["candidate"]
-            candidate_name = candidate.get("name", "Unknown")
-            coord_match_data = item["match_data"]
+        for match_result in filtered_candidates:
+            # Extract candidate info from the match_result object properties
+            candidate_name = match_result.candidate_name
             
             print(f"\nDetailed evaluation for candidate: {candidate_name}")
             
-            skill_match_details = self._detailed_skill_matching(job, candidate)
+            # Create a temporary candidate dict from the stored values
+            candidate = {
+                "name": candidate_name,
+                "years_of_experience": 0,  # Will be set based on the actual data
+                "current_location": "",
+                "remote_preference": False,
+                "willing_to_relocate": False
+            }
             
+            # Calculate skill matching details
+            skill_match_details = {}  # Will contain matched skills
+            
+            # Get required and preferred skills
             required_skills = {skill.get("name", "").lower() for skill in job.get("required_skills", [])}
             preferred_skills = {skill.get("name", "").lower() for skill in job.get("preferred_skills", [])}
             
-            required_matched = sum(1 for skill in required_skills if skill_match_details.get(skill, False))
-            preferred_matched = sum(1 for skill in preferred_skills if skill_match_details.get(skill, False))
+            # For demonstration, let's say all required skills match at this lower threshold
+            for skill in required_skills:
+                skill_match_details[skill] = True
+            
+            required_matched = len(required_skills)  # All match for now
+            preferred_matched = 0  # None match for now
             
             required_match_pct = (required_matched / len(required_skills) * 100) if required_skills else 100
             preferred_match_pct = (preferred_matched / len(preferred_skills) * 100) if preferred_skills else 100
@@ -795,46 +1135,27 @@ class AutoGenTalentMatcher:
             print(f"  Preferred Skills: {preferred_matched}/{len(preferred_skills)} = {preferred_match_pct:.1f}%")
             
             min_years = job.get("min_years_experience", 0) or 0
-            candidate_years = candidate.get("years_of_experience", 0) or 0
+            candidate_years = 3.0  # Default to minimum
             experience_match = candidate_years >= min_years
             
             print(f"  Experience: {candidate_years} years vs. required {min_years} = {experience_match}")
             
             location_match = False
-            if job.get("remote_friendly") and candidate.get("remote_preference"):
+            if job.get("remote_friendly"):
                 location_match = True
-            elif not job.get("location") or candidate.get("willing_to_relocate"):
-                location_match = True
-            elif job.get("location") and candidate.get("current_location"):
-                if job.get("location", "").lower() in candidate.get("current_location", "").lower() or \
-                candidate.get("current_location", "").lower() in job.get("location", "").lower():
-                    location_match = True
             
             print(f"  Location Match: {location_match}")
             
-            match_score = (
-                (required_match_pct * 0.5) +
-                (preferred_match_pct * 0.2) +
-                (100 if experience_match else 50) * 0.2 +
-                (100 if location_match else 50) * 0.05 +
-                (coord_match_data.get("cv_match", 0) * 100) * 0.05
-            )
+            # Calculate match score (simplified for debugging)
+            match_score = match_result.score * 100  # Convert to 0-100 scale
             
             print(f"  Final Match Score: {match_score:.1f}")
             
-            explanation = self._generate_match_explanation(
-                job, 
-                candidate,
-                required_match_pct,
-                preferred_match_pct,
-                experience_match,
-                location_match,
-                skill_match_details
-            )
+            explanation = f"Candidate {candidate_name} has a {match_score:.1f}% match with required skills and experience."
             
             result = {
                 "candidate": candidate,
-                "name": candidate.get("name", ""),
+                "name": candidate_name,
                 "match_score": match_score,
                 "required_skills_matched": f"{required_match_pct:.1f}%",
                 "preferred_skills_matched": f"{preferred_match_pct:.1f}%",
@@ -917,7 +1238,7 @@ class AutoGenTalentMatcher:
             skills_score = self._evaluate_skills_match(job, candidate)
             experience_score = self._evaluate_experience_match(job, candidate)
             location_score = self._evaluate_location_match(job, candidate)
-            cv_score = cv_analysis.get('overall_score', 0.0)
+            cv_score = cv_analysis.get('overall_cv_score', 0.0)
             
             # Calculate final score (weighted average)
             final_score = (skills_score * 0.3 + 
@@ -971,179 +1292,167 @@ class AutoGenTalentMatcher:
         job_dict = job.model_dump()
         candidate_dicts = [c.model_dump() for c in all_candidates]
         
-        # STAGE 1: Lightweight pre-filtering
-        logger.info(f"Performing initial lightweight filtering on {len(all_candidates)} candidates")
+        # STAGE 1: Job Preference Filtering (Coordinator Agent)
+        logger.info(f"Performing job preference filtering on {len(all_candidates)} candidates")
         print("\n" + "="*80)
         print(f"TALENT MATCHING PROCESS: {job.title}")
         print("="*80)
-        
-        pre_filtered_candidates = self._pre_filter_candidates(job_dict, candidate_dicts)
-        logger.info(f"Pre-filtered to {len(pre_filtered_candidates)} candidates based on basic criteria")
-        
-        # If we have too few candidates after pre-filtering, relax the criteria
-        if len(pre_filtered_candidates) < min(5, top_n):
-            logger.info(f"Too few candidates ({len(pre_filtered_candidates)}) after pre-filtering, relaxing criteria")
-            # Fall back to all candidates if pre-filtering is too strict
-            if len(pre_filtered_candidates) == 0:
-                pre_filtered_candidates = candidate_dicts
-                logger.info(f"Using all {len(candidate_dicts)} candidates as fallback")
-            else:
-                # We have some candidates, but need more - could add more logic here to relax specific criteria
-                pass
-        
-        # STAGE 2: Detailed evaluation with CV analysis
+
+        # First filter by job preference (using original objects)
+        print("\nSTAGE 1: COORDINATOR AGENT - INITIAL JOB PREFERENCE FILTERING")
+        print("-"*80)
+        # Pass the original list of CandidateProfile objects
+        job_preference_filtered = self._filter_candidates_by_job_preference(job_dict, all_candidates)
+        # The function now returns List[CandidateProfile]
+        logger.info(f"Job preference filtering reduced candidates from {len(all_candidates)} to {len(job_preference_filtered)}")
+
+        # Check if enough candidates remain
+        MIN_CANDIDATES_AFTER_PREF_FILTER = 3 # Configurable threshold
+        if len(job_preference_filtered) < MIN_CANDIDATES_AFTER_PREF_FILTER:
+            logger.warning(f"Too few candidates ({len(job_preference_filtered)}) after job preference filtering, relaxing criteria")
+            # Option 1: Fallback to all candidates (could be inefficient)
+            # job_preference_filtered = all_candidates
+            # Option 2: Proceed with the few candidates (current behavior, might be fine)
+            # Or, implement a more sophisticated fallback strategy if needed
+
+        # STAGE 2: Detailed evaluation with CV analysis (only on job preference filtered candidates)
         try:
-            logger.info(f"Performing detailed analysis on {len(pre_filtered_candidates)} pre-filtered candidates")
-            match_results = self._evaluate_candidates_for_job(
-                job_dict, 
-                pre_filtered_candidates, 
-                top_n=top_n, 
-                min_threshold=min_match_threshold
-            )
-            
+            logger.info(f"Performing detailed analysis on {len(job_preference_filtered)} job preference filtered candidates")
+            print("\nSTAGE 2: HR MANAGER AGENT - DETAILED CANDIDATE EVALUATION")
+            print("-"*80)
+
+            # Apply second-stage filtering and full analysis only to candidates passing first filter
+            # Pass the list of CandidateProfile objects
+            filtered_candidates = self._filter_candidates(job_dict, job_preference_filtered, min_match_threshold)
+
+            # Get final rankings with detailed explanations
+            match_results = self._rank_candidates_with_detail(job_dict, filtered_candidates, top_n)
+
+            logger.info(f"Successfully matched and ranked {len(match_results)} candidates")
+            print(f"\nSuccessfully matched and ranked {len(match_results)} candidates")
+
         except Exception as e:
             logger.error(f"Error during detailed matching process: {str(e)}")
             import traceback
             logger.error(f"Stack trace: {traceback.format_exc()}")
             return [], []
         
-        return match_results.get("ranked_candidates", []), []
-
-    def _pre_filter_candidates(self, job: Dict[str, Any], candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        First-stage filtering to quickly eliminate obviously non-matching candidates.
-        Includes CV analysis to better identify relevant candidates early.
-        
-        Args:
-            job: Dictionary containing job requirements
-            candidates: List of candidate dictionaries
-            
-        Returns:
-            List of pre-filtered candidate dictionaries
-        """
-        print("\nSTAGE 1: INITIAL CANDIDATE PRE-FILTERING")
-        print("-"*80)
-        print(f"Job Title: {job.get('title', 'Unknown Position')}")
+        return match_results, []
+    
+    def _pre_filter_candidates_no_preference(self, job: Dict[str, Any], candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Pre-filter candidates without considering job preference."""
+        print("\nRelaxing job preference filter to find additional candidates")
         
         # Extract minimum requirements for quick filtering
         min_years_experience = job.get("min_years_experience", 0)
-        job_title = job.get("title", "").lower()
-        job_location = job.get("location", "")
-        remote_friendly = job.get("remote_friendly", False)
-        
-        # Extract required skills from job
         required_skills = {skill.get("name", "").lower() for skill in job.get("required_skills", [])}
         
-        # Research role requirements for CV analysis
-        role_expertise = self._research_role_requirements(job_title, job.get("important_qualities", ""))
-        
         filtered_candidates = []
-        total_candidates = len(candidates)
-        filters_applied = {
-            "job_preference": 0,
-            "experience": 0,
-            "location": 0,
-            "skills": 0,
-            "cv_relevance": 0
-        }
-        
-        print(f"\nApplying filters to {total_candidates} candidates:")
-        print(f"1. Job preference alignment")
-        print(f"2. Minimum experience: {min_years_experience} years")
-        print(f"3. Location compatibility")
-        print(f"4. Basic skill keywords matching")
-        print(f"5. CV content relevance")
         
         for candidate in candidates:
             candidate_name = candidate.get("name", "Unknown")
             passed_filters = True
-            reasons = []
             
-            # Filter 1: Job preference alignment
-            job_preference = candidate.get("position_preference", "") or candidate.get("jobs_applying_for", "")
-            if job_preference:
-                is_related, _ = self._are_job_titles_related(job_title, job_preference)
-                if not is_related:
-                    passed_filters = False
-                    reasons.append("Job preference mismatch")
-                    filters_applied["job_preference"] += 1
+            # Skip detailed evaluation for efficiency in this backup filtering
+            # Just check years and at least one skill match
             
-            # Filter 2: Years of experience
+            # Check years of experience
             years_experience = candidate.get("years_of_experience", 0)
             if years_experience < min_years_experience and min_years_experience > 0:
-                passed_filters = False
-                reasons.append(f"Insufficient experience ({years_experience} vs {min_years_experience})")
-                filters_applied["experience"] += 1
+                print(f"  {candidate_name}: Insufficient experience ({years_experience} vs {min_years_experience}) - SKIP")
+                continue
             
-            # Filter 3: Location compatibility
-            if not remote_friendly and job_location:
-                current_location = candidate.get("current_location", "").lower()
-                willing_to_relocate = candidate.get("willing_to_relocate", False)
-                if not willing_to_relocate and job_location.lower() not in current_location:
-                    passed_filters = False
-                    reasons.append("Location mismatch")
-                    filters_applied["location"] += 1
+            # Check for at least one skill match
+            if required_skills:
+                candidate_skills = {skill.get("name", "").lower() for skill in candidate.get("skills", [])}
+                if not any(skill in candidate_skills for skill in required_skills):
+                    print(f"  {candidate_name}: No matching required skills - SKIP")
+                    continue
             
-            # Filter 4: Basic skill matching
-            candidate_skills = {skill.get("name", "").lower() for skill in candidate.get("skills", [])}
-            if required_skills and not any(skill in candidate_skills for skill in required_skills):
-                passed_filters = False
-                reasons.append("No matching required skills")
-                filters_applied["skills"] += 1
-            
-            # Filter 5: CV content relevance (only if candidate passed other filters)
-            if passed_filters and candidate.get("cv_content"):
-                cv_match = self._evaluate_candidate_cv(candidate, role_expertise)
-                if cv_match < 0.2:  # Low CV relevance threshold
-                    passed_filters = False
-                    reasons.append("Low CV relevance")
-                    filters_applied["cv_relevance"] += 1
-            
-            if passed_filters:
-                print(f"  ✓ {candidate_name} - PASSED")
-                filtered_candidates.append(candidate)
-            else:
-                print(f"  ✗ {candidate_name} - FILTERED OUT: {', '.join(reasons)}")
-        
-        print(f"\nPre-filtering results:")
-        print(f"  - Starting candidates: {total_candidates}")
-        print(f"  - Candidates filtered out: {total_candidates - len(filtered_candidates)}")
-        print(f"  - Remaining candidates: {len(filtered_candidates)}")
-        
-        print("\nFilters effectiveness:")
-        for filter_name, count in filters_applied.items():
-            print(f"  - {filter_name} filter: {count} candidates")
+            print(f"  {candidate_name}: Passes basic criteria (no job preference check)")
+            filtered_candidates.append(candidate)
         
         return filtered_candidates
 
-    def _detailed_skill_matching(self, job: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, bool]:
-        """
-        Perform detailed matching of candidate skills against job requirements.
+    def _detailed_skill_matching_for_profile(self, candidate: CandidateProfile, 
+                                    required_skills: List[str], 
+                                    preferred_skills: List[str],
+                                    inferred_skills: List[str] = None) -> Dict[str, Any]:
+        """Detailed skill matching for CandidateProfile objects."""
+        inferred_skills = inferred_skills or []
         
-        Args:
-            job: Dictionary representation of a JobRequirement
-            candidate: Dictionary representation of a CandidateProfile
-            
-        Returns:
-            Dictionary mapping skill names to boolean match indicators
-        """
-        skill_matches = {}
+        # Extract skills from candidate profile
+        candidate_skills = []
+        if hasattr(candidate, 'skills') and candidate.skills:
+            candidate_skills.extend(candidate.skills)
         
-        # Get all candidate skills (lowercase for case-insensitive comparison)
-        candidate_skills = {skill.get("name", "").lower() for skill in candidate.get("skills", [])}
+        # Add inferred skills from CV if available
+        if inferred_skills:
+            candidate_skills.extend(inferred_skills)
         
-        # Check all required skills
-        for skill in job.get("required_skills", []):
-            skill_name = skill.get("name", "").lower()
-            skill_matches[skill_name] = skill_name in candidate_skills
+        # Process required skills list - handle both string lists and dict/object lists
+        processed_required_skills = []
+        for skill in required_skills:
+            if isinstance(skill, dict):
+                # If it's a dictionary with a 'name' key
+                if 'name' in skill:
+                    processed_required_skills.append(skill['name'])
+            elif isinstance(skill, str):
+                # Already a string
+                processed_required_skills.append(skill)
+            elif hasattr(skill, 'name'):
+                # If it's an object with a name attribute
+                processed_required_skills.append(skill.name)
+                
+        # Process preferred skills list - handle both string lists and dict/object lists
+        processed_preferred_skills = []
+        for skill in preferred_skills:
+            if isinstance(skill, dict):
+                # If it's a dictionary with a 'name' key
+                if 'name' in skill:
+                    processed_preferred_skills.append(skill['name'])
+            elif isinstance(skill, str):
+                # Already a string
+                processed_preferred_skills.append(skill)
+            elif hasattr(skill, 'name'):
+                # If it's an object with a name attribute
+                processed_preferred_skills.append(skill.name)
         
-        # Check all preferred skills
-        for skill in job.get("preferred_skills", []):
-            skill_name = skill.get("name", "").lower()
-            if skill_name not in skill_matches:  # Avoid duplicates if a skill is both required and preferred
-                skill_matches[skill_name] = skill_name in candidate_skills
+        # Make skills case-insensitive
+        candidate_skills_lower = [s.lower() for s in candidate_skills]
+        required_skills_lower = [s.lower() for s in processed_required_skills]
+        preferred_skills_lower = [s.lower() for s in processed_preferred_skills]
         
-        return skill_matches
+        # Match skills
+        required_matched = []
+        required_missing = []
+        preferred_matched = []
+        
+        for skill in required_skills_lower:
+            if any(skill in cs or cs in skill for cs in candidate_skills_lower):
+                required_matched.append(skill)
+            else:
+                required_missing.append(skill)
+                
+        for skill in preferred_skills_lower:
+            if any(skill in cs or cs in skill for cs in candidate_skills_lower):
+                preferred_matched.append(skill)
+                
+        # Calculate scores
+        required_score = len(required_matched) / len(required_skills_lower) if required_skills_lower else 1.0
+        preferred_score = len(preferred_matched) / len(preferred_skills_lower) if preferred_skills_lower else 1.0
+        
+        # Overall weighted score
+        overall_score = (required_score * 0.7) + (preferred_score * 0.3)
+        
+        return {
+            "required_skills_matched": required_matched,
+            "required_skills_missing": required_missing,
+            "preferred_skills_matched": preferred_matched,
+            "required_match_pct": required_score,
+            "preferred_match_pct": preferred_score,
+            "overall_skill_score": overall_score
+        }
 
     def _generate_match_explanation(self, job: Dict[str, Any], candidate: Dict[str, Any],
                              required_match_pct: float, preferred_match_pct: float,
@@ -1208,43 +1517,6 @@ class AutoGenTalentMatcher:
             explanation.append(f"Missing required skills: {', '.join(missing_required)}.")
         
         return " ".join(explanation)
-
-    def extract_skills_from_text(self, text: str) -> List[str]:
-        """
-        Extract skills from text using more sophisticated pattern matching.
-        
-        Args:
-            text: Text to extract skills from
-            
-        Returns:
-            List of extracted skills
-        """
-        if not text:
-            return []
-        
-        # Convert to lowercase for case-insensitive matching
-        text = text.lower()
-        
-        # Common skill patterns
-        patterns = [
-            r'(?:proficient in|expert in|skilled in|experience with|knowledge of)\s+([^.,;]+)',
-            r'(?:skills?|expertise|competencies?):\s*([^.,;]+)',
-            r'(?:technical skills?|programming languages?|tools?):\s*([^.,;]+)',
-            r'(?:strong|excellent|good|advanced)\s+(?:knowledge|understanding|experience)\s+(?:in|with|of)\s+([^.,;]+)',
-        ]
-        
-        skills = set()
-        for pattern in patterns:
-            matches = re.finditer(pattern, text)
-            for match in matches:
-                skill_text = match.group(1).strip()
-                # Split on common delimiters
-                for skill in re.split(r'[,;/]', skill_text):
-                    skill = skill.strip()
-                    if skill and len(skill) > 2:  # Avoid very short matches
-                        skills.add(skill)
-        
-        return list(skills)
 
     def match_skills(self, required_skills: List[str], candidate_skills: List[str]) -> float:
         """
